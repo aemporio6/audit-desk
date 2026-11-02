@@ -567,8 +567,8 @@ AD.recognise = function (sheet, fileName) {
 // Whole file → parts (one per sheet that was recognised) + unknown sheets
 AD.ingest = function (name, data) {
   const f = AD.readFile(name, data);
-  if (f.type === 'image') return { name, type: 'image', parts: [{ kind: 'screenshot', label: 'Screenshot (Seller Hub)', sheet: name }] };
-  if (f.type === 'pdf') return { name, type: 'pdf', parts: [{ kind: 'pdf', label: 'PDF (kept as proof)', sheet: name }] };
+  if (f.type === 'image') { const st = /statement|bank|lloyds?|barclays|hsbc|natwest|santander|monzo|starling|revolut|wise|paypal|payoneer|tide|card/i.test(name); return { name, type: 'image', parts: [st ? { kind: 'stmt_image', label: 'Picture of a bank / card statement (kept as proof)', sheet: name } : { kind: 'screenshot', label: 'Screenshot (Seller Hub)', sheet: name }] }; }
+  if (f.type === 'pdf') { const st = /statement|bank|lloyds?|barclays|hsbc|natwest|santander|monzo|starling|revolut|wise|paypal|payoneer|tide|card/i.test(name); return { name, type: 'pdf', parts: [{ kind: st ? 'stmt_image' : 'pdf', label: st ? 'Bank / card statement PDF (kept as proof)' : 'PDF (kept as proof)', sheet: name }] }; }
   const parts = [];
   for (const sh of f.sheets) {
     if (!sh.rows.length || sh.rows.every(r => r.every(c => String(c).trim() === ''))) continue;
@@ -812,7 +812,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '1.5.0';
+const APPV = '1.5.1';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -926,6 +926,7 @@ async function intake(file, hint = {}, path = '') {
   const u8 = new Uint8Array(buf);
   const id = AD.hash(u8);
   const dup = FILES.find(f => f.id === id) || (await DB.get('archive', id).catch(() => null));
+  if (dup && path && dup.path !== path) { dup.altPaths = [...new Set([...(dup.altPaths || []), path])]; DB.put(FILES.includes(dup) ? 'files' : 'archive', dup.id, dup).catch(() => { }); setTimeout(() => { if (autoMerge()) { invalidate(); render(); } }, 0); }
   if (dup) return { rec: dup, dup: true, msgs: [{ t: 'grey', m: `“${file.name}” is already in the tool (same file). Counted once.` }] };
   let ing;
   try { ing = AD.ingest(file.name, buf); } catch (e) { logErr(e, 'ingest ' + file.name); ing = { name: file.name, type: 'table', parts: [{ kind: 'unknown', label: 'Could not open this file: ' + e.message, sheet: file.name }] }; }
@@ -966,14 +967,14 @@ function place(rec) {
         const last = new Date(+p.start.slice(0, 4), +p.start.slice(5, 7), 0).getDate();
         if (p.start.slice(8) !== '01' || p.end.slice(0, 7) !== p.start.slice(0, 7) || +p.end.slice(8) !== last) p.notes.push({ t: 'bad', m: `This report covers ${p.start} to ${p.end}, not one full month.`, issue: 'Part of the month missing' });
       }
-    } else if (['va_sheet', 'ae_refunds', 'screenshot', 'pdf', 'market_sales'].includes(p.kind)) {
+    } else if (['va_sheet', 'ae_refunds', 'screenshot', 'pdf', 'market_sales', 'stmt_image'].includes(p.kind)) {
       // account: 1) by order numbers that match an eBay report, 2) by name of file / folder / tab, 3) the choice on screen
       let a = null, how = '';
       if (p.rows && p.rows.some(r => r.order)) { const best = acctByOrders(p.rows.map(r => r.order).filter(Boolean)); if (best) { a = best; how = 'order numbers match its eBay reports'; } }
       if (!a) { a = guessAcct(rec.name + ' ' + (rec.path || '') + ' ' + (p.sheet || '')); if (a) how = 'its name'; }
       if (!a && h.acct) { a = acctById(h.acct); how = 'your choice'; }
       p.acct = a ? a.id : null; p.placedBy = how;
-      if (p.kind === 'screenshot' || p.kind === 'pdf') { const d = guessMonth(rec.name + ' ' + rec.path), lm = latestMonth(p.acct); p.month = h.month || (lm && (!d || d > lm) ? lm : d) || AD.addMonths(thisMonth(), -1); p.monthGuess = !h.month; }
+      if (p.kind === 'screenshot' || p.kind === 'pdf' || p.kind === 'stmt_image') { const d = guessMonth(rec.name + ' ' + rec.path), lm = latestMonth(p.acct); p.month = h.month || (lm && (!d || d > lm) ? lm : d) || AD.addMonths(thisMonth(), -1); p.monthGuess = !h.month; }
       if (!p.acct) { p.waiting = true; p.check = true; } // kept; placed by itself when its account's report arrives, and shown in Please check
     } else if (p.kind === 'unknown') { p.acct = h.acct || '*'; p.notNeeded = true; }
     else { p.acct = '*'; }
@@ -1015,7 +1016,7 @@ function autoRead(p) {
   if (best) { applyMap(p, best.kind, hrow, best.cols, false); p.label = KIND_LABEL[best.kind] + ' (read by itself, new layout)'; p.auto = true; }
   else p.notNeeded = true;
 }
-const KIND_LABEL = { ebay_txn: 'eBay Transaction report', ebay_orders: 'eBay Orders report', va_sheet: 'VA order sheet', ae_refunds: 'AliExpress refunds list', stock_cost: 'Stock cost list', statement: 'Money statement', ae_orders: 'AliExpress orders', market_sales: 'Marketplace sales file', screenshot: 'Screenshot', pdf: 'PDF', unknown: 'Unknown layout' };
+const KIND_LABEL = { stmt_image: 'Statement (picture / PDF)', ebay_txn: 'eBay Transaction report', ebay_orders: 'eBay Orders report', va_sheet: 'VA order sheet', ae_refunds: 'AliExpress refunds list', stock_cost: 'Stock cost list', statement: 'Money statement', ae_orders: 'AliExpress orders', market_sales: 'Marketplace sales file', screenshot: 'Screenshot', pdf: 'PDF', unknown: 'Unknown layout' };
 function describe(rec) {
   const M = [];
   rec.parts.forEach(p => {
@@ -1032,6 +1033,7 @@ function describe(rec) {
       case 'market_sales': m = `${p.platform} sales file · ${p.count} rows`; break;
       case 'screenshot': m = `Screenshot${an ? ' · ' + an : ''}${p.month ? ' · ' + MLL(p.month) : ''}. Type its numbers in the screenshot card.`; break;
       case 'pdf': m = `PDF kept as proof${an ? ' · ' + an : ''}`; break;
+      case 'stmt_image': m = `Statement picture / PDF${an ? ' · ' + an : ''}${p.month ? ' · ' + MLL(p.month) : ''}. Kept as proof; its numbers cannot be read from a picture, so payouts are not ticked against it.`; break;
       default: m = `“${p.sheet}”: not needed for the audit. Kept on one side in “Not needed”, nothing lost.`;
     }
     M.push({ t: p.kind === 'unknown' ? 'grey' : 'ok', m });
@@ -1093,7 +1095,7 @@ function steps(acctId, month) {
   }
   if (!a || a.type !== 'Own stock') S.push({ k: 'va', t: 'VA order sheet (cost per order)', done: hasVA, need: true, kind: 'va_sheet', how: ['Keep the VA Google Sheet in Drive (or paste its link in Files & Drive). The tool reads every tab by itself and takes each order by its eBay date.', 'Any layout works. The tool finds the order number, cost and AliExpress order ID columns by itself.'], why: 'Gives the cost of each dropship order, so profit can be worked out.' });
   if (!a || a.type !== 'Dropship') S.push({ k: 'stock', t: 'Stock cost list (own stock)', done: hasStock, need: true, kind: 'stock_cost', how: ['Keep the “eBay STOCK” Google Sheet in the Drive folder (or add it here). The tool reads every tab by itself.', 'New stock can also be added in the Stock screen when goods arrive.'], why: 'Gives the cost of own-stock SKUs (B- SKUs).' });
-  S.push({ k: 'stmt', t: 'Wise / bank / card statement', done: hasStmt, need: false, kind: 'statement', how: ['Wise: Account → Statements and reports → the GBP balance → dates of the month → download.', 'PayPal: Activity → Statements → Activity download.', 'Bank or card: online banking → Statements → Export or download.'], why: 'Ticks each eBay payout against the bank, and checks AliExpress costs against card payments. Optional but recommended.' });
+  S.push({ k: 'stmt', t: 'Wise / bank / card statement', done: hasStmt || activeParts('stmt_image').some(p => p.acct === acctId && p.month === month), need: false, kind: 'statement', how: ['Wise: Account → Statements and reports → the GBP balance → dates of the month → download.', 'PayPal: Activity → Statements → Activity download.', 'Bank or card: online banking → Statements → Export or download.'], why: 'Ticks each eBay payout against the bank, and checks AliExpress costs against card payments. Optional but recommended.' });
   if (isEbay) S.push({ k: 'shot', t: 'Seller Hub screenshot (optional)', done: !!shot || activeParts('screenshot').some(p => p.acct === acctId && p.month === month), need: false, kind: 'screenshot', how: ['eBay Seller Hub → Payments → Summary → choose the same month.', 'Put the screenshot in the Drive folder. Its numbers can be typed in the screenshot card.'], why: 'Extra proof only. The audit works without it.' });
   S.push({ k: 'review', t: 'Review issues', done: !!A && open.length === 0, need: true, how: [open.length ? `${open.length} issues are open. Each one shows what to do next.` : 'No open issues.'], why: 'Every issue has a next step and an owner.' });
   S.push({ k: 'lock', t: 'Approve and lock the month', done: !!lock, need: true, how: ['When everything is checked, press “Approve and lock”. The numbers are saved and the report is ready to download.'], why: 'A locked month cannot change by mistake. After two months it moves to History.' });
@@ -1236,7 +1238,7 @@ function autoMerge() {
     for (const a of K.acc) for (const b of K.acc) {
       if (a === b) continue;
       const same = AD.norm(a.name) === AD.norm(b.name) && (!a.seller || !b.seller || a.seller === b.seller);
-      const madeFor = a.isNew && a.seller && !b.seller && FILES.some(f => f.hint && f.hint.acct === b.id && f.parts.some(p => p.acct === a.id));
+      const madeFor = a.isNew && a.seller && !b.seller && FILES.some(f => f.parts.some(p => p.acct === a.id) && ((f.hint && f.hint.acct === b.id) || [f.path, ...(f.altPaths || [])].some(pp => pp && guessAcct(pp) === b)));
       if (same && filled(a) <= filled(b) || madeFor) { if (mergeAccounts(a.id, b.id)) { n++; again = true; break; } }
     }
   }
@@ -2187,10 +2189,10 @@ async function driveHunt(seen) {
   const lm = AD.addMonths(thisMonth(), -1); const need = [];
   K.acc.forEach(a => { const ms = new Set([lm]); activeParts().forEach(p => { if (p.acct === a.id && p.month) ms.add(p.month); }); ms.forEach(m => { if (m >= thisMonth() || K.locks[a.id + '|' + m]) return; const g = steps(a.id, m); g.S.filter(s => !s.done && s.need && s.kind).forEach(s => need.push({ a, m, s })); }); });
   if (!need.length) return [];
-  const words = new Set(['Transaction', 'Orders', 'OrdersReport', 'eBay', 'report', 'profit', 'stock', 'cost', 'statement', 'AliExpress', 'Wise', 'PayPal']);
-  need.forEach(x => [x.a.name, x.a.seller, ...(x.a.aliases || [])].filter(v => v && v.length >= 3).slice(0, 4).forEach(v => words.add(String(v).replace(/'/g, ''))));
+  const words = new Set(['Transaction', 'Orders', 'statement', 'AliExpress', 'profit']);
+
   const since = new Date(Date.now() - 120 * 864e5).toISOString();
-  const q = `modifiedTime > '${since}' and mimeType != 'application/vnd.google-apps.folder' and (${[...words].slice(0, 25).map(w => `title contains '${w}'`).join(' or ')})`;
+  const q = `modifiedTime > '${since}' and (mimeType = 'text/csv' or mimeType contains 'spreadsheet' or mimeType contains 'excel' or mimeType = 'text/plain' or mimeType contains 'image/' or mimeType = 'application/pdf') and (${[...words].slice(0, 25).map(w => `title contains '${w}'`).join(' or ')})`;
   let found = []; try { const r = pay(await gcall('search_files', { query: q, pageSize: 100, excludeContentSnippets: true })); found = (r && r.files) || []; } catch (e) { logErr(e, 'drive hunt search'); return []; }
   const have = new Set(FILES.map(f => f.driveId).filter(Boolean));
   const todo = found.filter(f => !have.has(f.id) && seen[f.id] !== f.modifiedTime && !/AUDIT-DESK-APP|^Audit Desk (app|data)/i.test(f.title) && (+f.size || +f.fileSize || 0) < 8e6).slice(0, 25);
@@ -2203,6 +2205,7 @@ async function driveHunt(seen) {
       const name = f.title + (ex && !f.title.toLowerCase().endsWith(ex[1]) ? ex[1] : '');
       const res = await intake(new File([b64ToBytes(b64)], name, { type: (ex && ex[0]) || f.mimeType || '' }), {}, f.path || '');
       seen[f.id] = f.modifiedTime;
+      if (res.rec && !res.dup && res.rec.parts.every(p => p.kind === 'unknown' || p.kind === 'stock_cost' || p.kind === 'market_sales')) { FILES.splice(FILES.indexOf(res.rec), 1); await DB.del('files', res.rec.id); continue; } // not an audit file: leave it in Drive, do not bring it in
       if (res.rec && !res.dup) { res.rec.driveId = f.id; res.rec.driveParent = f.parentId || ''; res.rec.found = true; res.rec.parts.forEach(p => { if (p.kind !== 'unknown') p.check = true; }); await DB.put('files', res.rec.id, res.rec); out.push({ name, msgs: [{ t: 'ok', m: `Found by itself elsewhere in Drive${f.path ? ' (folder “' + f.path + '”)' : ''}.` }].concat(res.msgs), rec: res.rec }); }
     } catch (e) { logErr(e, 'drive hunt ' + f.title); }
   }
