@@ -161,7 +161,7 @@ html.phone .form{grid-template-columns:1fr}html.phone .modal{width:calc(100% - 1
 html.phone .drawer{width:100%}html.phone table{font-size:12.5px}html.phone td,html.phone th{padding:6px 7px}
 html.phone .top{padding:8px 10px}
 </style></head><body>
-<div class="app"><aside class="rail" id="rail"></aside><main><div class="top" id="top"></div><div class="wrap" id="view"><div id="boot" style="padding:20px;max-width:560px;line-height:1.6;font-family:system-ui,sans-serif"><p><b>Opening Audit Desk…</b></p><p>If this stays, this app (Hotmail, Outlook, WhatsApp, Files preview) is only showing a preview and cannot run tools.</p><p>Open your <b>Audit Desk link</b> (the Google link saved in your bookmarks) in Chrome or Safari instead. It works on iPhone, Android and computer, with the same data everywhere.</p></div></div></main></div>
+<div class="app"><aside class="rail" id="rail"></aside><main><div class="top" id="top"></div><div class="wrap" id="view"><div id="boot" style="padding:20px;max-width:560px;line-height:1.6;font-family:system-ui,sans-serif"><p><b>Opening Audit Desk…</b></p><p>If this stays, open <b>https://aemporio6.github.io/audit-desk</b> in Chrome or Safari.</p></div></div></main></div>
 <nav class="mob" id="mob"></nav><div id="layer"></div>
 <noscript>Please turn on JavaScript to use Audit Desk.</noscript>
 <script>/*! xlsx.js (C) 2013-present SheetJS -- http://sheetjs.com */
@@ -2081,7 +2081,7 @@ async function driveInit() {
 }
 function driveCard() {
   const inLink = IS_GAS || !!(window.claude && window.claude.use);
-  if (!DRV.mcp) return `<div class="card"><h2>Google Drive</h2><p class="note">${inLink ? 'Connecting to Google Drive…' : 'This copy is the downloaded file, so it cannot reach Google Drive by itself. Open your Audit Desk link (it works on iPhone, Android and computer): there the tool reads the Drive folders by itself every time it opens and every 30 minutes.'}</p></div>`;
+  if (!DRV.mcp) return `<div class="card"><h2>Google Drive</h2><p class="note">${inLink ? 'Connecting to Google Drive…' : 'Google Drive is not connected yet. Until then, add files with the box below (on a phone you can pick files from Google Drive). Soon: Sign in with Google (aemporio6) and the tool reads the Drive folders by itself.'}</p></div>`;
   return `<div class="card"><div class="row between"><h2>Google Drive · read by itself</h2><button class="btn pri" data-act="driveNow" ${DRV.busy ? 'disabled' : ''}>${DRV.busy ? 'Reading…' : 'Check Drive now'}</button></div>
   <p class="note"><span class="drvmsg">${esc(DRV.msg || '')}</span>${K.prefs.driveLast ? ` · last check ${esc(new Date(K.prefs.driveLast).toLocaleString('en-GB'))}` : ''}</p>${DRV.busy ? `<div class="bar"><i id="drvbar" style="width:${DRV.total ? Math.round(100 * DRV.n / DRV.total) : 3}%"></i></div>` : ''}
   <div class="list">${roots().map((r, i) => `<div class="li"><div class="ic i-${r.bad ? 'bad' : 'ok'}">${r.bad ? '✕' : '✓'}</div><div class="grow"><div class="t">${esc(r.title || r.name || r.id)}</div><div class="d">${r.bad ? 'Cannot open this link with the connected Google account.' : 'Every file inside is read by itself, sub-folders too. New and changed files only.'}</div></div><button class="btn sm" data-act="driveDel" data-i="${i}">Remove</button></div>`).join('')}</div>
