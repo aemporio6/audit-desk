@@ -265,10 +265,26 @@ function parseCSV(text) {
 AD.parseCSV = parseCSV;
 
 // Read any file into sheets [{name, rows}] . XLSX global (SheetJS) used for spreadsheets.
+// what a file really is, from its first bytes (names and extensions can be anything)
+AD.sniff = function (data) {
+  if (!data || typeof data === 'string') return null;
+  const u = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data, 0, Math.min(32, data.byteLength || 0));
+  const b = i => u[i], str = (i, n) => String.fromCharCode(...u.slice(i, i + n));
+  if (u.length < 4) return null;
+  if (b(0) === 0x89 && str(1, 3) === 'PNG') return 'image';
+  if (b(0) === 0xFF && b(1) === 0xD8 && b(2) === 0xFF) return 'image';
+  if (str(0, 3) === 'GIF' || str(0, 2) === 'BM') return 'image';
+  if (str(0, 4) === 'RIFF' && str(8, 4) === 'WEBP') return 'image';
+  if (str(4, 4) === 'ftyp' && /heic|heix|hevc|mif1|msf1|avif/.test(str(8, 4))) return 'image';
+  if ((b(0) === 0x49 && b(1) === 0x49 && b(2) === 0x2A) || (b(0) === 0x4D && b(1) === 0x4D && b(3) === 0x2A)) return 'image';
+  if (str(0, 4) === '%PDF') return 'pdf';
+  return null;
+};
 AD.readFile = function (name, data) {
   const ext = (name.split('.').pop() || '').toLowerCase();
-  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'heic'].includes(ext)) return { type: 'image', sheets: [] };
-  if (ext === 'pdf') return { type: 'pdf', sheets: [] };
+  const sn = AD.sniff(data);
+  if (sn === 'image' || (!sn && ['png', 'jpg', 'jpeg', 'jfif', 'webp', 'gif', 'heic', 'heif', 'bmp', 'tif', 'tiff', 'avif'].includes(ext))) return { type: 'image', sheets: [] };
+  if (sn === 'pdf' || (!sn && ext === 'pdf')) return { type: 'pdf', sheets: [] };
   if (['csv', 'txt', 'tsv'].includes(ext) || typeof data === 'string') {
     const text = typeof data === 'string' ? data : decodeText(data);
     return { type: 'table', sheets: [{ name: name, rows: parseCSV(text) }] };
@@ -812,7 +828,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '1.5.1';
+const APPV = '1.6.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -932,6 +948,7 @@ async function intake(file, hint = {}, path = '') {
   try { ing = AD.ingest(file.name, buf); } catch (e) { logErr(e, 'ingest ' + file.name); ing = { name: file.name, type: 'table', parts: [{ kind: 'unknown', label: 'Could not open this file: ' + e.message, sheet: file.name }] }; }
   const rec = { id, name: file.name, size: file.size || u8.length, added: new Date().toISOString(), path: path || '', hint, parts: ing.parts, type: ing.type, status: 'ok' };
   if (ing.type === 'image') rec.img = await toDataURL(file);
+  if (ing.type === 'pdf' && u8.length < 25e6) rec.raw = await toDataURL(new Blob([u8], { type: 'application/pdf' }));
   autoMap(rec);
   place(rec);
   // duplicates by content period (newer download replaces older)
@@ -975,6 +992,7 @@ function place(rec) {
       if (!a && h.acct) { a = acctById(h.acct); how = 'your choice'; }
       p.acct = a ? a.id : null; p.placedBy = how;
       if (p.kind === 'screenshot' || p.kind === 'pdf' || p.kind === 'stmt_image') { const d = guessMonth(rec.name + ' ' + rec.path), lm = latestMonth(p.acct); p.month = h.month || (lm && (!d || d > lm) ? lm : d) || AD.addMonths(thisMonth(), -1); p.monthGuess = !h.month; }
+      if (!p.acct && ['screenshot', 'pdf', 'stmt_image'].includes(p.kind)) { const g = bestGuessAcct(p.kind); if (g) { p.acct = g; p.placedBy = 'best guess'; p.check = true; if (p.monthGuess) { const lm = latestMonth(g); if (lm) p.month = lm; } } }
       if (!p.acct) { p.waiting = true; p.check = true; } // kept; placed by itself when its account's report arrives, and shown in Please check
     } else if (p.kind === 'unknown') { p.acct = h.acct || '*'; p.notNeeded = true; }
     else { p.acct = '*'; }
@@ -990,6 +1008,19 @@ function acctByOrders(list) {
   K.acc.forEach(a => { let n = 0; FILES.forEach(f => f.parts.forEach(q => { if (q.acct !== a.id) return; if (q.kind === 'ebay_orders') q.orders.forEach(o => { if (set.has(o.order)) n++; }); else if (q.kind === 'ebay_txn') { const seen = new Set(); q.lines.forEach(l => { if (l.order && !seen.has(l.order) && set.has(l.order)) { seen.add(l.order); n++; } }); } })); if (n > bn) { bn = n; best = a; } });
   return bn >= 3 || (bn > 0 && bn >= list.length * 0.5) ? best : null;
 }
+// no name, no folder, no choice: the account open on screen, else the newest month that still needs this kind of file
+function bestGuessAcct(kind) {
+  if (typeof S !== 'undefined' && S.acct && acctById(S.acct)) return S.acct;
+  const need = (a, m) => kind === 'screenshot' ? !activeParts('screenshot').some(p => p.acct === a && p.month === m) && !K.shots[a + '|' + m] : !activeParts('stmt_image').some(p => p.acct === a && p.month === m);
+  let best = null, bm = '';
+  K.acc.forEach(a => { const m = latestMonth(a.id); if (m && need(a.id, m) && m > bm) { bm = m; best = a.id; } });
+  if (best) return best;
+  K.acc.forEach(a => { const m = latestMonth(a.id) || ''; if (m > bm) { bm = m; best = a.id; } });
+  return best;
+}
+// VA share of profit: % set on the account (Accounts → Edit → VA share). Only on a profit; a loss gives no share.
+function vaPct(a) { const v = a ? a.vaPct : null; return v === '' || v == null || isNaN(+v) ? 0 : +v; }
+function vaShareOf(a, profit, lock) { const pc = lock && lock.vaPct != null ? +lock.vaPct : vaPct(a); if (!pc || !(profit > 0)) return 0; return Math.round(profit * pc / 100); }
 function latestMonth(acctId) { const m = FILES.flatMap(f => f.parts).filter(q => q.acct === acctId && q.kind === 'ebay_txn').map(q => q.month).sort(); return m[m.length - 1] || null; }
 // re-place files that were waiting for their account (runs after every new file)
 // tabs of the same workbook belong to the same account
@@ -1016,7 +1047,7 @@ function autoRead(p) {
   if (best) { applyMap(p, best.kind, hrow, best.cols, false); p.label = KIND_LABEL[best.kind] + ' (read by itself, new layout)'; p.auto = true; }
   else p.notNeeded = true;
 }
-const KIND_LABEL = { stmt_image: 'Statement (picture / PDF)', ebay_txn: 'eBay Transaction report', ebay_orders: 'eBay Orders report', va_sheet: 'VA order sheet', ae_refunds: 'AliExpress refunds list', stock_cost: 'Stock cost list', statement: 'Money statement', ae_orders: 'AliExpress orders', market_sales: 'Marketplace sales file', screenshot: 'Screenshot', pdf: 'PDF', unknown: 'Unknown layout' };
+const KIND_LABEL = { other_pic: 'Picture (not an audit page)', stmt_image: 'Statement (picture / PDF)', ebay_txn: 'eBay Transaction report', ebay_orders: 'eBay Orders report', va_sheet: 'VA order sheet', ae_refunds: 'AliExpress refunds list', stock_cost: 'Stock cost list', statement: 'Money statement', ae_orders: 'AliExpress orders', market_sales: 'Marketplace sales file', screenshot: 'Screenshot', pdf: 'PDF', unknown: 'Unknown layout' };
 function describe(rec) {
   const M = [];
   rec.parts.forEach(p => {
@@ -1031,12 +1062,13 @@ function describe(rec) {
       case 'statement': m = `${p.source} statement · ${p.count} lines · ${p.start || ''} to ${p.end || ''}`; break;
       case 'ae_orders': m = `AliExpress orders · ${p.count} orders`; break;
       case 'market_sales': m = `${p.platform} sales file · ${p.count} rows`; break;
-      case 'screenshot': m = `Screenshot${an ? ' · ' + an : ''}${p.month ? ' · ' + MLL(p.month) : ''}. Type its numbers in the screenshot card.`; break;
+      case 'screenshot': m = `Screenshot${an ? ' · ' + an : ''}${p.month ? ' · ' + MLL(p.month) : ''}. ${p.shotFilled ? ' The tool read its numbers by itself; see the screenshot card.' : rec.ocr || !(typeof ocrBase === "function" && ocrBase()) ? ' Type its numbers in the screenshot card if they are not filled.' : ' Reading it…'}`; break;
+      case 'other_pic': m = 'Picture that is not a Seller Hub page or a statement. Kept in “Not needed”; one tap there uses it if it is.'; break;
       case 'pdf': m = `PDF kept as proof${an ? ' · ' + an : ''}`; break;
-      case 'stmt_image': m = `Statement picture / PDF${an ? ' · ' + an : ''}${p.month ? ' · ' + MLL(p.month) : ''}. Kept as proof; its numbers cannot be read from a picture, so payouts are not ticked against it.`; break;
+      case 'stmt_image': m = `Statement picture / PDF${an ? ' · ' + an : ''}${p.month ? ' · ' + MLL(p.month) : ''}. Counts for the statement step and is kept as proof. Payouts are ticked one by one only from a spreadsheet statement.`; break;
       default: m = `“${p.sheet}”: not needed for the audit. Kept on one side in “Not needed”, nothing lost.`;
     }
-    M.push({ t: p.kind === 'unknown' ? 'grey' : 'ok', m });
+    M.push({ t: p.kind === 'unknown' || p.kind === 'other_pic' ? 'grey' : 'ok', m });
     if (p.auto) M.push({ t: 'ok', m: `New layout: the tool found the columns by itself (${Object.entries(p.colsUsed || {}).map(([k, v]) => k + ' = ' + v).join(', ')}).` });
     if (p.placedBy && p.acct && p.acct !== '*') M.push({ t: 'ok', m: `Placed under ${an}: ${p.placedBy}.` });
     if (p.waiting) M.push({ t: 'grey', m: 'Kept. It will be placed under its account by itself as soon as that account’s eBay report is in.' });
@@ -1373,7 +1405,7 @@ V.home = () => {
    <div class="bar" style="margin:10px 0"><i style="width:${Math.round(100 * done / g.S.length)}%"></i></div>
    ${g.next ? `<div class="li" style="border:0;padding:0"><div class="ic i-warn">→</div><div class="grow"><div class="t">Next: ${esc(g.next.t)}</div><div class="d">${esc(g.next.how[0])}</div></div></div><div class="row" style="margin-top:8px">${g.next.kind ? (typeof DRV !== 'undefined' && DRV.mcp ? `<span class="pill p-acc">⟳ watching Drive for it</span>` : `<button class="btn sm" data-act="pick" data-acct="${a.id}" data-month="${m}">Add by hand</button>`) : ''}<button class="btn sm" data-act="goAudit" data-acct="${a.id}" data-month="${m}">Open audit</button></div>` : `<div class="check">✓ ${MLL(m)} is complete</div>`}
    ${older.length ? `<div class="note" style="margin-top:8px">Also not locked yet: ${older.map(x => `<button class="btn sm" data-act="goAudit" data-acct="${a.id}" data-month="${x}">${ML(x)}</button>`).join(' ')}</div>` : ''}
-   ${g.A && g.A.sums ? `<div class="calc" style="margin-top:10px"><span class="l">eBay net</span>${money(g.A.sums.net)}<span class="l">Profit</span>${g.A.nCostMissing ? `<span class="num">${fmt(g.A.profit)} <small class="note">(${g.A.nCostMissing} costs missing)</small></span>` : money(g.A.profit)}</div>` : ''}
+   ${g.A && g.A.sums ? `<div class="calc" style="margin-top:10px"><span class="l">eBay net</span>${money(g.A.sums.net)}<span class="l">Profit</span>${g.A.nCostMissing ? `<span class="num">${fmt(g.A.profit)} <small class="note">(${g.A.nCostMissing} costs missing)</small></span>` : money(g.A.profit)}${vaPct(g.a) ? `<span class="l">VA share (${esc(g.a.va || 'VA')} ${vaPct(g.a)}%)</span>${money(-vaShareOf(g.a, g.A.profit, K.locks[g.a.id + '|' + m]))}<span class="l">Profit after VA share</span>${money(g.A.profit - vaShareOf(g.a, g.A.profit, K.locks[g.a.id + '|' + m]))}` : ''}</div>` : ''}
   </div>`).join('')}</div>
   ${iss.length ? `<div class="card"><div class="row between"><h2>Most important open issues</h2><button class="btn sm" data-go="issues">All ${iss.length}</button></div><div class="list">${groupIssues(iss).slice(0, 8).map(g => `<div class="li"><div class="ic i-${g.sev}">${ic(g.sev)}</div><div class="grow"><div class="t">${esc(g.acct)} · ${esc(g.label)} · ${esc(g.kind)}${g.n > 1 ? ` (${g.n})` : ''}</div><div class="d">${esc(g.next)}</div></div>${g.amt ? money(g.amt) : ''}</div>`).join('')}</div></div>` : ''}`;
 };
@@ -1443,7 +1475,7 @@ T.summary = (a, m, A) => {
   const checks = [[A.netFail === 0, `eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}`], [Math.abs(A.cash.diff) <= 1, `Cash balances: difference ${fmt(A.cash.diff)}`], [Math.abs(A.plCheck) <= 50, `Profit & loss ties to eBay net${A.plCheck ? ` (${fmt(A.plCheck)} currency rounding)` : ''}`], [!A.orMatch || A.orMatch.pct === 100, A.orMatch ? `Orders report matches ${A.orMatch.pct}% (${A.orMatch.inOr} orders)` : 'Orders report not uploaded yet'], [!A.nCostMissing, A.nCostMissing ? `${A.nCostMissing} orders have no cost yet` : `Cost found for all ${A.costKnown} orders`]];
   if (A.payMatch) checks.push([A.payMatch.found === A.payMatch.total, `Payouts found in bank: ${A.payMatch.found} of ${A.payMatch.total}`]);
   if (A.aeMatch) checks.push([A.aeMatch.hit === A.aeMatch.tried, `AliExpress costs found on card / bank: ${A.aeMatch.hit} of ${A.aeMatch.tried}`]);
-  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div><div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
+  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${vaPct(a) ? `<div class="card tile"><div class="k">VA share · ${esc(a.va || 'VA')} ${vaPct(a)}% ${help('Profit × the VA share set on the account (Accounts → Edit). A loss gives no share.')}</div><div class="v">${fmt(vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))}</div></div><div class="card tile hi"><div class="k">Profit after VA share</div><div class="v">${fmt(A.profit - vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))}</div></div>` : ''}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
   ${A.nCostMissing ? `<div class="check w">Profit is not final: ${A.nCostMissing} orders have no cost. <button class="btn sm" data-act="ofl" data-v="No cost found">Show them</button></div>` : ''}
   <div class="card"><h2>Checks</h2><div class="list">${checks.map(([ok, t]) => `<div class="li"><div class="ic i-${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'}</div><div class="grow">${esc(t)}</div></div>`).join('')}</div></div>`;
 };
@@ -1474,7 +1506,7 @@ T.issues = (a, m) => issueTable(issuesAll().filter(i => i.acctId === a.id && i.m
 T.shot = (a, m, A) => {
   const s = K.shots[a.id + '|' + m]; const imgs = activeParts('screenshot').filter(p => p.acct === a.id && p.month === m);
   return `<div class="card"><div class="row between"><h2>Seller Hub screenshot check</h2><button class="btn pri" data-act="shot">${s ? 'Edit numbers' : 'Type the numbers'}</button></div>${imgs.map(p => `<img src="${p._file.img}" alt="Screenshot ${esc(p._file.name)}" style="max-width:100%;border:1px solid var(--line);border-radius:8px;margin-top:8px">`).join('')}
-  ${s ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th>Line</th><th class="r">Screenshot</th><th class="r">Tool</th><th class="r">Difference</th></tr></thead><tbody>${shotCompare(A, s).map(r => `<tr><td>${esc(r.k)}</td><td class="r num">${r.isQty ? r.theirs / 100 : fmt(r.theirs)}</td><td class="r num">${r.ours === null ? '–' : r.isQty ? r.ours / 100 : fmt(r.ours)}</td><td class="r">${r.d === null ? '–' : r.bad ? pill(r.isQty ? String(r.d / 100) : fmt(r.d), 'warn') : pill('match', 'ok')}</td></tr>`).join('')}</tbody></table></div><p class="note">Seller Hub sometimes shows fee credits a few pence different from the report. The report is the proof; the screenshot is an extra check.</p>` : '<p class="note">Optional. Type the numbers from the screenshot to compare.</p>'}</div>`;
+  ${s && s.auto ? '<p class="note">The tool read these numbers from the screenshot by itself. Have a quick look; tap “Edit numbers” to fix any.</p>' : ''}${s ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th>Line</th><th class="r">Screenshot</th><th class="r">Tool</th><th class="r">Difference</th></tr></thead><tbody>${shotCompare(A, s).map(r => `<tr><td>${esc(r.k)}</td><td class="r num">${r.isQty ? r.theirs / 100 : fmt(r.theirs)}</td><td class="r num">${r.ours === null ? '–' : r.isQty ? r.ours / 100 : fmt(r.ours)}</td><td class="r">${r.d === null ? '–' : r.bad ? pill(r.isQty ? String(r.d / 100) : fmt(r.d), 'warn') : pill('match', 'ok')}</td></tr>`).join('')}</tbody></table></div><p class="note">Seller Hub sometimes shows fee credits a few pence different from the report. The report is the proof; the screenshot is an extra check.</p>` : '<p class="note">Optional. Type the numbers from the screenshot to compare.</p>'}</div>`;
 };
 T.vat = (a, m, A) => {
   const reg = /VAT registered/.test(a.vat || '');
@@ -1500,7 +1532,7 @@ V.issues = () => { const L = issuesAll().filter(issuePass); const open = L.filte
 
 // ---------- SET ASIDE ----------
 V.aside = () => {
-  const notNeeded = activeParts().filter(p => p.notNeeded && p.kind === 'unknown');
+  const notNeeded = activeParts().filter(p => p.notNeeded && (p.kind === 'unknown' || p.kind === 'other_pic'));
   const waiting = activeParts().filter(p => p.waiting);
   const autoRead = activeParts().filter(p => p.auto);
   const rows = activeParts().filter(p => (p.aside || []).length || (p.unusedCols || []).length);
@@ -1512,7 +1544,7 @@ V.aside = () => {
   return `<h1>Kept aside</h1><p class="sub">Every file is taken in. What the audit needs is used; anything else is kept here on one side so you can see it. Nothing is lost and nothing waits for you.</p>
   ${autoRead.length ? `<div class="card"><h2>New layouts read by the tool itself (${autoRead.length})</h2><div class="list">${autoRead.map(p => `<div class="li"><div class="ic i-ok">✓</div><div class="grow"><div class="t">${esc(p._file.name)} · ${esc(p.sheet || '')}</div><div class="d">Read as ${esc(KIND_LABEL[p.kind])}: ${p.count} rows. Columns: ${esc(Object.entries(p.colsUsed || {}).map(([k, v]) => k + ' = ' + v).join(', '))}</div></div></div>`).join('')}</div></div>` : ''}
   ${waiting.length ? `<div class="card"><h2>Waiting for their account (${waiting.length})</h2><p class="note">These will be placed by themselves when the matching eBay report comes in. You can also place them now.</p><div class="list">${waiting.map(p => { const f = p._file, pi = f.parts.indexOf(p); return `<div class="li"><div class="ic i-grey">·</div><div class="grow"><div class="t">${esc(f.name)} · ${esc(p.sheet || '')}</div><div class="d">${esc(KIND_LABEL[p.kind])} · ${p.count || ''} rows</div></div>${dd(`a_${f.id}_${pi}`, null, '', K.acc.map(a => ({ v: a.id, l: a.name })))}<button class="btn sm" data-act="setAcct" data-id="${f.id}" data-p="${pi}">Place now</button></div>`; }).join('')}</div></div>` : ''}
-  <div class="card"><h2>Not needed for the audit (${notNeeded.length})</h2>${notNeeded.length ? `<div class="list">${notNeeded.map(p => `<div class="li"><div class="ic i-grey">·</div><div class="grow"><div class="t">${esc(p._file.name)}${p.sheet && p.sheet !== p._file.name ? ' · tab “' + esc(p.sheet) + '”' : ''}</div><div class="d">${p.nrows || 0} rows · not a sales, fee, cost, stock or money file</div>${mapper(p)}</div></div>`).join('')}</div>` : '<p class="note">Nothing here.</p>'}</div>
+  <div class="card"><h2>Not needed for the audit (${notNeeded.length})</h2>${notNeeded.length ? `<div class="list">${notNeeded.map(p => `<div class="li"><div class="ic i-grey">·</div><div class="grow"><div class="t">${esc(p._file.name)}${p.sheet && p.sheet !== p._file.name ? ' · tab “' + esc(p.sheet) + '”' : ''}</div>${p.kind === 'other_pic' ? `<div class="d">Picture · not a Seller Hub page or a statement</div><div class="row" style="margin-top:6px"><button class="btn sm" data-act="picAs" data-id="${p._file.id}" data-k="screenshot">Use as Seller Hub screenshot</button><button class="btn sm" data-act="picAs" data-id="${p._file.id}" data-k="stmt_image">Use as statement</button></div>` : `<div class="d">${p.nrows || 0} rows · not a sales, fee, cost, stock or money file</div>${mapper(p)}`}</div></div>`).join('')}</div>` : '<p class="note">Nothing here.</p>'}</div>
   ${rows.length ? `<div class="card"><h2>Rows and columns not needed inside used files</h2><p class="note">Totals: rows used + rows kept aside = rows in the file.</p>${rows.map(p => `<details><summary>${esc(p._file.name)} · ${esc(p.sheet || '')} · ${(p.aside || []).length} rows · ${(p.unusedCols || []).length} columns</summary>${(p.unusedCols || []).length ? `<p class="note">Columns not needed: ${esc(p.unusedCols.join(', '))}</p>` : ''}${(p.aside || []).length ? `<div class="tw" style="max-height:240px"><table><thead><tr><th>Row</th><th>Why</th><th>Values</th></tr></thead><tbody>${p.aside.slice(0, 200).map(x => `<tr><td class="num">${x.row}</td><td>${esc(x.reason)}</td><td class="note">${esc((x.values || []).join(' | ').slice(0, 160))}</td></tr>`).join('')}</tbody></table></div>` : ''}</details>`).join('')}</div>` : ''}`;
 };
 // ---------- HELD, HEALTH, TREND ----------
@@ -1520,11 +1552,13 @@ function allAudits() { const L = []; K.acc.filter(accPass).forEach(a => auditMon
 V.held = () => { const L = allAudits().filter(x => x.A.cash.held); const tot = L.reduce((s, x) => s + x.A.cash.held, 0); return `<h1>Held money</h1><p class="sub">Money eBay kept back at the time the report was downloaded. Download that month’s report again after delivery to see it paid.</p><div class="grid"><div class="card tile"><div class="k">Total held</div><div class="v">${fmt(tot)}</div></div></div><div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">Orders</th><th class="r">Held</th><th></th></tr></thead><tbody>${L.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r num">${Object.keys(x.A.cash.heldOrders).length}</td><td class="r">${money(x.A.cash.held)}</td><td><button class="btn sm" data-act="pick" data-acct="${x.a.id}" data-month="${x.m}">Upload newer report</button></td></tr>`).join('') || '<tr><td colspan="5" class="note">Nothing held. ✓</td></tr>'}</tbody></table></div></div>`; };
 V.health = () => { const L = allAudits(); return `<h1>Account health</h1><p class="sub">Warning signs per month. Red means act now.</p><div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">Held %</th><th class="r">Refund rate</th><th class="r">Ads % of sales</th><th class="r">INAD fee</th><th class="r">Below Standard fee</th></tr></thead><tbody>${L.map(({ a, m, A }) => { const h = A.health; const c = (v, w, b) => v >= b ? 'p-bad' : v >= w ? 'p-warn' : 'p-ok'; return `<tr><td>${esc(a.name)}</td><td>${MLL(m)}</td><td class="r"><span class="pill ${c(h.heldPct, 10, 30)}">${h.heldPct}%</span></td><td class="r"><span class="pill ${c(h.refundRate, 5, 10)}">${h.refundRate}%</span></td><td class="r"><span class="pill ${c(h.adsPct, 8, 15)}">${h.adsPct}%</span></td><td class="r">${h.inad ? `<span class="pill p-bad">${fmt(h.inad)}</span>` : pill('none', 'ok')}</td><td class="r">${h.below ? `<span class="pill p-bad">${fmt(h.below)}</span>` : pill('none', 'ok')}</td></tr>`; }).join('') || '<tr><td colspan="7" class="note">No audits yet.</td></tr>'}</tbody></table></div></div>`; };
 V.trend = () => {
-  const L = allAudits(); const byM = {}; L.forEach(({ m, A }) => { const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0 }; x.net += A.sums.net; x.cogs += A.cogs; x.profit += A.profit; x.gross += A.sums.gross; });
-  Object.entries(K.history).forEach(([k, h]) => { const m = k.split('|')[1]; const ha = acctById(k.split('|')[0]); if (!ha || !accPass(ha) || !monthPass(m)) return; const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0 }; if (!L.some(l => l.m === m && l.a.id === k.split('|')[0])) { x.net += h.net; x.cogs += h.cogs; x.profit += h.profit; x.gross += h.gross; } });
+  const L = allAudits(); const byM = {}; const VAx = {}; const vaAdd = (a, m, profit, lock) => { const sh = vaShareOf(a, profit, lock); byM[m].va += sh; if (!vaPct(a) && !(lock && lock.vaPct)) return; const who = (lock && lock.va) || a.va || 'VA not set', r = VAx[who + '|' + m] = VAx[who + '|' + m] || { who, m, accts: [], profit: 0, share: 0 }; r.accts.push(`${a.name} ${(lock && lock.vaPct != null ? lock.vaPct : vaPct(a))}%`); r.profit += profit; r.share += sh; };
+  L.forEach(({ a, m, A }) => { const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0, va: 0 }; x.net += A.sums.net; x.cogs += A.cogs; x.profit += A.profit; x.gross += A.sums.gross; vaAdd(a, m, A.profit, K.locks[a.id + '|' + m]); });
+  Object.entries(K.history).forEach(([k, h]) => { const m = k.split('|')[1]; const ha = acctById(k.split('|')[0]); if (!ha || !accPass(ha) || !monthPass(m)) return; const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0, va: 0 }; if (!L.some(l => l.m === m && l.a.id === k.split('|')[0])) { x.net += h.net; x.cogs += h.cogs; x.profit += h.profit; x.gross += h.gross; vaAdd(ha, m, h.profit, h); } });
   const ms = Object.keys(byM).sort(); const max = Math.max(1, ...ms.map(m => Math.max(byM[m].gross, byM[m].net)));
   return `<h1>Trend</h1><p class="sub">Accounts in the filter, month by month.</p><div class="card"><div class="tbars">${ms.map(m => { const x = byM[m]; return `<div class="tb"><div class="tbc"><i style="height:${Math.max(2, 100 * x.gross / max)}%;background:var(--line)" title="Sales ${fmt(x.gross)}"></i><i style="height:${Math.max(2, 100 * x.net / max)}%;background:var(--accent)" title="eBay net ${fmt(x.net)}"></i><i style="height:${Math.max(2, 100 * Math.max(0, x.profit) / max)}%;background:var(--ok)" title="Profit ${fmt(x.profit)}"></i></div><div class="note">${ML(m)}</div></div>`; }).join('') || '<p class="note">No audits yet.</p>'}</div><div class="row note"><span><i class="lg" style="background:var(--line)"></i>Sales</span><span><i class="lg" style="background:var(--accent)"></i>eBay net</span><span><i class="lg" style="background:var(--ok)"></i>Profit</span></div></div>
-  <div class="card"><div class="tw"><table><thead><tr><th>Month</th><th class="r">Sales</th><th class="r">eBay net</th><th class="r">Cost of goods</th><th class="r">Profit</th></tr></thead><tbody>${ms.map(m => `<tr><td>${MLL(m)}</td><td class="r">${money(byM[m].gross)}</td><td class="r">${money(byM[m].net)}</td><td class="r">${money(byM[m].cogs)}</td><td class="r">${money(byM[m].profit)}</td></tr>`).join('')}</tbody></table></div></div>`;
+  <div class="card"><div class="tw"><table><thead><tr><th>Month</th><th class="r">Sales</th><th class="r">eBay net</th><th class="r">Cost of goods</th><th class="r">Profit</th><th class="r">VA share</th><th class="r">After VA share</th></tr></thead><tbody>${ms.map(m => `<tr><td>${MLL(m)}</td><td class="r">${money(byM[m].gross)}</td><td class="r">${money(byM[m].net)}</td><td class="r">${money(byM[m].cogs)}</td><td class="r">${money(byM[m].profit)}</td><td class="r">${money(-byM[m].va)}</td><td class="r">${money(byM[m].profit - byM[m].va)}</td></tr>`).join('')}</tbody></table></div></div>
+  <div class="card"><h2>VA shares ${help('Each account has its VA and the VA share in % (Accounts → Edit). Share = profit × %. A month with a loss gives no share.')}</h2>${Object.keys(VAx).length ? `<div class="tw"><table><thead><tr><th>VA</th><th>Month</th><th>Accounts</th><th class="r">Profit</th><th class="r">VA share</th></tr></thead><tbody>${Object.values(VAx).sort((x, y) => y.m.localeCompare(x.m) || x.who.localeCompare(y.who)).map(r => `<tr><td>${esc(r.who)}</td><td>${MLL(r.m)}</td><td class="note">${esc(r.accts.join(', '))}</td><td class="r">${money(r.profit)}</td><td class="r"><b>${money(r.share)}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="note">No VA share set yet. Set it once per account: Accounts → Edit → “VA share of profit (%)”.</p>'}</div>`;
 };
 
 // ---------- STOCK ----------
@@ -1542,7 +1576,7 @@ V.stock = () => {
 V.history = () => {
   const H = Object.entries(K.history).map(([k, h]) => ({ k, a: acctById(k.split('|')[0]), m: k.split('|')[1], h })).filter(x => x.a && accPass(x.a) && monthPass(x.m)).sort((x, y) => y.m.localeCompare(x.m));
   return `<h1>History</h1><p class="sub">Only this month and last month stay in the main screens, so the tool stays fast. Older locked months move here automatically on the 1st${FS.root ? ', and their files move to the “Audits Archive” folder' : ''}.</p>
-  <div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">eBay net</th><th class="r">Profit</th><th>Locked</th><th>Files</th><th></th></tr></thead><tbody>${H.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r">${money(x.h.net)}</td><td class="r">${money(x.h.profit)}</td><td class="note">${esc((x.h.lockedAt || '').slice(0, 10))}</td><td class="note">${(x.h.files || []).length} files${x.h.folder ? ` · ${esc(x.h.folder)}` : ''}</td><td class="row"><button class="btn sm" data-act="histOpen" data-k="${esc(x.k)}">Open</button><button class="btn sm" data-act="histBack" data-k="${esc(x.k)}">Move back</button></td></tr>`).join('') || '<tr><td colspan="7" class="note">Nothing in History yet. Locked months older than last month move here.</td></tr>'}</tbody></table></div></div>`;
+  <div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">eBay net</th><th class="r">Profit</th><th class="r">VA share</th><th class="r">After VA share</th><th>Locked</th><th>Files</th><th></th></tr></thead><tbody>${H.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r">${money(x.h.net)}</td><td class="r">${money(x.h.profit)}</td><td class="r">${money(-vaShareOf(x.a, x.h.profit, x.h))}</td><td class="r">${money(x.h.profit - vaShareOf(x.a, x.h.profit, x.h))}</td><td class="note">${esc((x.h.lockedAt || '').slice(0, 10))}</td><td class="note">${(x.h.files || []).length} files${x.h.folder ? ` · ${esc(x.h.folder)}` : ''}</td><td class="row"><button class="btn sm" data-act="histOpen" data-k="${esc(x.k)}">Open</button><button class="btn sm" data-act="histBack" data-k="${esc(x.k)}">Move back</button></td></tr>`).join('') || '<tr><td colspan="9" class="note">Nothing in History yet. Locked months older than last month move here.</td></tr>'}</tbody></table></div></div>`;
 };
 
 // ---------- REGISTER ----------
@@ -1554,7 +1588,7 @@ V.register = () => {
   ${S.list === '__acc' ? accountsEditor() : S.list === '__fields' ? fieldsEditor() : `<div class="card"><div class="row"><input class="in" id="regadd" placeholder="Add to ${esc(S.list)}…" style="flex:1"><button class="btn pri" data-act="regAdd">Add</button></div><div class="list" style="margin-top:8px">${L.map((v, i) => `<div class="li"><div class="grow"><input class="in" value="${esc(v)}" data-act="regRen" data-l="${esc(S.list)}" data-i="${i}" aria-label="Rename" style="width:100%"></div><button class="btn sm" data-act="regDel" data-i="${i}">Remove</button></div>`).join('')}</div></div>`}`;
 };
 function accountsEditor() {
-  return `<div class="card"><div class="row between"><h2>Accounts (${K.acc.length})</h2><button class="btn pri" data-act="addAcct">+ Add account</button></div><div class="tw"><table><thead><tr><th>Name</th><th>Seller ID</th><th>Other names (aliases)</th><th>Team</th><th>Company</th><th>Platform</th><th>Type</th><th>VA</th><th>VAT</th><th></th></tr></thead><tbody>${K.acc.map(a => `<tr><td>${esc(a.name)}${a.isNew ? ' ' + pill('new', 'warn') : ''}</td><td class="num">${esc(a.seller)}</td><td>${esc((a.aliases || []).join(', '))}</td><td>${esc(a.Team)}</td><td>${esc(a.Company)}</td><td>${esc(a.Platform)}</td><td>${esc(a.type)}</td><td>${esc(a.va)}</td><td class="note">${esc(a.vat)}</td><td><button class="btn sm" data-act="editAcct" data-id="${a.id}">Edit</button></td></tr>`).join('')}</tbody></table></div></div>`;
+  return `<div class="card"><div class="row between"><h2>Accounts (${K.acc.length})</h2><button class="btn pri" data-act="addAcct">+ Add account</button></div><div class="tw"><table><thead><tr><th>Name</th><th>Seller ID</th><th>Other names (aliases)</th><th>Team</th><th>Company</th><th>Platform</th><th>Type</th><th>VA</th><th class="r">VA share</th><th>VAT</th><th></th></tr></thead><tbody>${K.acc.map(a => `<tr><td>${esc(a.name)}${a.isNew ? ' ' + pill('new', 'warn') : ''}</td><td class="num">${esc(a.seller)}</td><td>${esc((a.aliases || []).join(', '))}</td><td>${esc(a.Team)}</td><td>${esc(a.Company)}</td><td>${esc(a.Platform)}</td><td>${esc(a.type)}</td><td>${esc(a.va)}</td><td class="r">${vaPct(a) ? vaPct(a) + '%' : '–'}</td><td class="note">${esc(a.vat)}</td><td><button class="btn sm" data-act="editAcct" data-id="${a.id}">Edit</button></td></tr>`).join('')}</tbody></table></div></div>`;
 }
 function fieldsEditor() {
   return `<div class="card"><h2>Add a field</h2><div class="form"><label>Field name<input id="fName" placeholder="e.g. Warehouse"></label><label>Type${dd('fType', null, 'Dropdown', ['Text', 'Number', 'Date', 'Dropdown', 'Multi-select'])}</label><label>Used on${dd('fOn', null, 'Accounts', ['Accounts', 'Issues'])}</label><label>Options (for dropdowns, comma separated)<input id="fOpts" placeholder="e.g. Manchester, London"></label></div><div class="row" style="margin-top:8px"><button class="btn pri" data-act="fAdd">Add field</button></div><p class="note">Dropdown fields appear in “More filters” at once.</p></div>
@@ -1582,7 +1616,7 @@ function checkCard() {
   const L = activeParts().filter(p => p.check && !p.checked && !p.ignored && p.kind !== 'unknown');
   if (!L.length) return '';
   const months = lastMonths(18).map(m => ({ v: m, l: MLL(m) }));
-  return `<div class="card" style="border-color:var(--accent)"><div class="row between"><h2>Please check (${L.length})</h2><button class="btn sm" data-act="checkAll">All look right</button></div><p class="note">The tool already uses these. It placed them by its best guess, so a quick look helps. Change anything with the dropdowns.</p><div class="list">${L.slice(0, 12).map(p => { const f = p._file, pi = f.parts.indexOf(p), key = f.id + '|' + pi; return `<div class="li"><div class="ic i-warn">?</div><div class="grow"><div class="t">${esc(f.name)}${p.sheet && p.sheet !== f.name ? ' · ' + esc(p.sheet) : ''}</div><div class="d">${esc(KIND_LABEL[p.kind] || p.kind)}${f.found ? ' · found by itself in Drive' : ''}${p.placedBy ? ' · placed by ' + esc(p.placedBy) : ''}</div><div class="row" style="margin-top:6px">${dd('ck_a_' + key.replace('|', '_'), null, p.acct || guessForCheck(p), [{ v: '', l: 'Not needed' }, ...K.acc.map(a => ({ v: a.id, l: a.name }))], `data-act="ckAcct" data-key="${esc(key)}"`)}${['screenshot', 'pdf', 'ebay_txn', 'ebay_orders', 'market_sales'].includes(p.kind) ? dd('ck_m_' + key.replace('|', '_'), null, p.month || '', months, `data-act="ckMonth" data-key="${esc(key)}"`) : ''}<button class="btn sm pri" data-act="ckOk" data-key="${esc(key)}">Looks right</button></div></div></div>`; }).join('')}</div></div>`;
+  return `<div class="card" style="border-color:var(--accent)"><div class="row between"><h2>Please check (${L.length})</h2><button class="btn sm" data-act="checkAll">All look right</button></div><p class="note">The tool already uses these. It placed them by its best guess, so a quick look helps. Change anything with the dropdowns.</p><div class="list">${L.slice(0, 12).map(p => { const f = p._file, pi = f.parts.indexOf(p), key = f.id + '|' + pi; return `<div class="li"><div class="ic i-warn">?</div><div class="grow"><div class="t">${esc(f.name)}${p.sheet && p.sheet !== f.name ? ' · ' + esc(p.sheet) : ''}</div><div class="d">${esc(KIND_LABEL[p.kind] || p.kind)}${f.found ? ' · found by itself in Drive' : ''}${p.placedBy ? ' · placed by ' + esc(p.placedBy) : ''}</div><div class="row" style="margin-top:6px">${dd('ck_a_' + key.replace('|', '_'), null, p.acct || guessForCheck(p), [{ v: '', l: 'Not needed' }, ...K.acc.map(a => ({ v: a.id, l: a.name }))], `data-act="ckAcct" data-key="${esc(key)}"`)}${PIC_KINDS.includes(p.kind) ? dd('ck_k_' + key.replace('|', '_'), null, p.kind, [{ v: 'screenshot', l: 'Seller Hub screenshot' }, { v: 'stmt_image', l: 'Statement' }, { v: 'pdf', l: 'Other proof' }, { v: 'other_pic', l: 'Not needed' }], `data-act="ckKind" data-key="${esc(key)}"`) : ''}${['screenshot', 'pdf', 'stmt_image', 'ebay_txn', 'ebay_orders', 'market_sales'].includes(p.kind) ? dd('ck_m_' + key.replace('|', '_'), null, p.month || '', months, `data-act="ckMonth" data-key="${esc(key)}"`) : ''}<button class="btn sm pri" data-act="ckOk" data-key="${esc(key)}">Looks right</button></div></div></div>`; }).join('')}</div></div>`;
 }
 
 function guessForCheck(p) { if (S.acct && acctById(S.acct)) return S.acct; let best = '', bm = ''; K.acc.forEach(a => { const m = latestMonth(a.id) || ''; if (m > bm) { bm = m; best = a.id; } }); return best; }
@@ -1617,6 +1651,7 @@ async function handleFiles(files, hint) {
     catch (e) { logErr(e, 'intake ' + f.name); out.push({ name: f.name, msgs: [{ t: 'bad', m: `Could not read this file: ${e.message}. It was not lost; try again, or press “Copy error for Claude” in Settings.` }] }); }
   }
   invalidate(); S.results = out.concat(S.results).slice(0, 30);
+  if (typeof ocrAll === 'function') setTimeout(ocrAll, 200);
   // tell the next step
   const r0 = out.find(r => r.rec && r.rec.parts.some(p => p.acct && p.acct !== '*' && p.month));
   if (r0 && acctById(r0.rec.parts.find(p => p.acct && p.acct !== '*' && p.month).acct)) { const p = r0.rec.parts.find(p => p.acct && p.acct !== '*' && p.month); const g = steps(p.acct, p.month); toast(`Got it: ${KIND_LABEL[p.kind]} for ${g.a.name}, ${MLL(p.month)}. ${g.next ? 'Next: ' + g.next.t + '.' : 'All steps done.'}`, null, 6000); if (S.view === 'audit' && (S.acct !== p.acct || S.month !== p.month)) { Object.assign(S, { acct: p.acct, month: p.month, tab: 'summary', stepI: null }); } }
@@ -1631,7 +1666,7 @@ function newAuditModal() {
 }
 function acctModal(id) {
   const a = id ? acctById(id) : { id: '', name: '', seller: '', aliases: [], Team: K.reg.Team[0] || '', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Dropship', va: '', vat: 'Not VAT registered', cf: {} };
-  layer(`<h2>${id ? 'Edit account' : 'Add account'}</h2><div class="form"><label>Name<input id="acName" value="${esc(a.name)}"></label><label>Seller ID (from eBay reports)<input id="acSeller" value="${esc(a.seller)}" placeholder="e.g. bizmart-uk"></label><label>Other names (aliases, comma separated)<input id="acAl" value="${esc((a.aliases || []).join(', '))}" placeholder="e.g. TOUQEER, BAY-191"></label><label>Team${dd('acTeam', 'Team', a.Team, ['', ...K.reg.Team])}</label><label>Company${dd('acCo', 'Company', a.Company, ['', ...K.reg.Company])}</label><label>Platform${dd('acPl', 'Platform', a.Platform)}</label><label>Type${dd('acType', 'Account type', a.type)}</label><label>VA${dd('acVA', 'Person', a.va, ['', ...K.reg.Person])}</label><label>VAT status${dd('acVat', 'VAT status', a.vat)}</label></div>
+  layer(`<h2>${id ? 'Edit account' : 'Add account'}</h2><div class="form"><label>Name<input id="acName" value="${esc(a.name)}"></label><label>Seller ID (from eBay reports)<input id="acSeller" value="${esc(a.seller)}" placeholder="e.g. bizmart-uk"></label><label>Other names (aliases, comma separated)<input id="acAl" value="${esc((a.aliases || []).join(', '))}" placeholder="e.g. TOUQEER, BAY-191"></label><label>Team${dd('acTeam', 'Team', a.Team, ['', ...K.reg.Team])}</label><label>Company${dd('acCo', 'Company', a.Company, ['', ...K.reg.Company])}</label><label>Platform${dd('acPl', 'Platform', a.Platform)}</label><label>Type${dd('acType', 'Account type', a.type)}</label><label>VA${dd('acVA', 'Person', a.va, ['', ...K.reg.Person])}</label><label>VA share of profit (%)<input id="acPct" type="number" inputmode="decimal" min="0" max="100" step="0.5" value="${esc(a.vaPct ?? '')}" placeholder="e.g. 20"></label><label>VAT status${dd('acVat', 'VAT status', a.vat)}</label></div>
   <div><div class="note">Sites</div><div class="chips">${K.reg.Site.map(s => `<label class="chip ${(a.Site || []).includes(s) ? 'on' : ''}"><input type="checkbox" class="acSite" value="${esc(s)}" ${(a.Site || []).includes(s) ? 'checked' : ''} hidden>${esc(s)}</label>`).join('')}</div></div>
   ${K.fields.filter(f => f.on === 'Accounts').map(f => `<label class="note">${esc(f.name)}<br>${fieldInput('acf_' + f.name, f, (a.cf || {})[f.name])}</label>`).join('')}
   <div class="row"><button class="btn pri" data-act="acSave" data-id="${esc(id || '')}">Save</button>${id && K.acc.length > 1 ? `<span class="row"><select class="in" id="acMergeTo" aria-label="Merge into">${K.acc.filter(x => x.id !== id).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select><button class="btn" data-act="acMerge" data-id="${esc(id)}">Merge into…</button></span>` : ''}${id ? `<button class="btn" data-act="acDel" data-id="${esc(id)}">Remove account</button>` : ''}<button class="btn" data-act="close">Cancel</button></div>`);
@@ -1685,7 +1720,7 @@ function weeklyMessage() {
 function skuSales(A) { const s = {}; const txn = activeParts('ebay_txn').find(p => p.acct === S.acct && p.month === S.month && !p.replacedBy); if (txn) txn.lines.forEach(l => { if (l.type === 'Order' && l.item && l.sku && /^B-/i.test(l.sku)) s[l.sku] = (s[l.sku] || 0) + (l.qty || 0); }); return s; }
 async function doLock(note) {
   const A = getAudit(S.acct, S.month); const k = S.acct + '|' + S.month;
-  K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
+  K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, va: acctById(S.acct) ? acctById(S.acct).va : '', vaPct: vaPct(acctById(S.acct)), vaShare: vaShareOf(acctById(S.acct), A.profit), cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
   await save('locks'); log(`Locked ${acctById(S.acct).name} ${S.month}`);
   if (FS.root) { try { await fsWriteReport(acctById(S.acct), S.month, A); } catch (e) { logErr(e, 'write report'); } }
   await archiveOld(); invalidate();
@@ -1758,7 +1793,7 @@ async function fsArchiveMonth(a, m) {
 // ---------- Excel report ----------
 function workbook(a, m, A) {
   const X = XLSX.utils, wb = X.book_new(), p = v => v == null ? '' : Math.round(v) / 100, z = k => A.sums[k] || 0;
-  const sum = [['Audit Desk report'], ['Account', a.name], ['Seller ID', a.seller], ['Month', MLL(m)], ['Period in report', `${A.start || ''} to ${A.end || ''}`], ['Made on', new Date().toLocaleString('en-GB')], [], ['Sales (gross)', p(z('gross'))], ['eBay net', p(z('net'))], ['Cost of goods', p(A.cogs)], ['Profit', p(A.profit)], ['Orders', z('orders')], ['Units', z('units')], ['Held by eBay', p(A.cash.held)], ['Orders with no cost', A.nCostMissing], [], ['Checks'], ['eBay maths lines that do not add up', A.netFail], ['Cash difference', p(A.cash.diff)], ['P&L tie difference (currency rounding)', p(A.plCheck)], ['Orders report match %', A.orMatch ? A.orMatch.pct : 'no report']];
+  const sum = [['Audit Desk report'], ['Account', a.name], ['Seller ID', a.seller], ['Month', MLL(m)], ['Period in report', `${A.start || ''} to ${A.end || ''}`], ['Made on', new Date().toLocaleString('en-GB')], [], ['Sales (gross)', p(z('gross'))], ['eBay net', p(z('net'))], ['Cost of goods', p(A.cogs)], ['Profit', p(A.profit)], ...(vaPct(a) ? [[`VA share (${a.va || 'VA'} ${vaPct(a)}%)`, p(vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))], ['Profit after VA share', p(A.profit - vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))]] : []), ['Orders', z('orders')], ['Units', z('units')], ['Held by eBay', p(A.cash.held)], ['Orders with no cost', A.nCostMissing], [], ['Checks'], ['eBay maths lines that do not add up', A.netFail], ['Cash difference', p(A.cash.diff)], ['P&L tie difference (currency rounding)', p(A.plCheck)], ['Orders report match %', A.orMatch ? A.orMatch.pct : 'no report']];
   X.book_append_sheet(wb, X.aoa_to_sheet(sum), 'Summary');
   const pl = [['Line', 'Amount (£)'], ['Sales', p(z('gross'))], ['Refunds', p(z('refunds'))], ['Claims and disputes', p(z('claims') + z('disputes'))], ['Final value fees', p(-z('fvf'))], ['Regulatory operating fee', p(-z('reg'))], ['International fee', p(-z('intl'))], ['Item Not As Described fee', p(-z('inad'))], ['Below Standard fee', p(-z('below'))], ['Fee credits on refunds', p(z('feeCredits'))], ['Final value fee credits', p(z('fvfCreditStandalone'))], ['Insertion fees', p(-z('insertion'))], ['Promoted Listings fees', p(-z('ads'))], ['Promoted Listings credits', p(z('adsCredit'))], ['Store subscription', p(-z('subscription'))], ['Other account fees', p(-z('otherFees'))], ['Postage labels', p(-z('postage'))], ['Other lines', p(z('otherLines'))], ['eBay net', p(z('net'))], ['Cost of goods sold', p(-A.cogs)], ['Profit', p(A.profit)]];
   X.book_append_sheet(wb, X.aoa_to_sheet(pl), 'Profit & loss');
@@ -1855,7 +1890,7 @@ const ACT = {
   acSave: el => {
     const id = el.dataset.id; const name = $('#acName').value.trim(); if (!name) { toast('Please give the account a name.'); return; }
     const a = id ? acctById(id) : { id: 'a' + uid(), cf: {} };
-    Object.assign(a, { name, seller: $('#acSeller').value.trim(), aliases: $('#acAl').value.split(',').map(s => s.trim()).filter(Boolean), Team: $('#acTeam').value, Company: $('#acCo').value, Platform: $('#acPl').value, type: $('#acType').value, va: $('#acVA').value, vat: $('#acVat').value, Site: $$('.acSite').filter(c => c.checked).map(c => c.value), isNew: false });
+    Object.assign(a, { name, seller: $('#acSeller').value.trim(), aliases: $('#acAl').value.split(',').map(s => s.trim()).filter(Boolean), Team: $('#acTeam').value, Company: $('#acCo').value, Platform: $('#acPl').value, type: $('#acType').value, va: $('#acVA').value, vaPct: (() => { const v = $('#acPct').value.trim(); if (v !== '') return Math.min(100, Math.max(0, +v)); const o = K.acc.find(x => x.id !== id && x.va && x.va === $('#acVA').value && vaPct(x)); return o ? o.vaPct : ''; })(), vat: $('#acVat').value, Site: $$('.acSite').filter(c => c.checked).map(c => c.value), isNew: false });
     a.cf = a.cf || {}; K.fields.filter(f => f.on === 'Accounts').forEach(f => a.cf[f.name] = readField('acf_' + f.name, f));
     if (!id) K.acc.push(a); save('acc');
     // re-place files with this seller id
@@ -1893,7 +1928,8 @@ document.addEventListener('click', ev => {
 document.addEventListener('change', async ev => {
   const t = ev.target;
   if (t.tagName === 'SELECT' && t.value === '__add') { const l = t.dataset.list; t.value = t.options[0].value; addNewModal(l, t.id); return; }
-  if (t.dataset.act === 'ckAcct' || t.dataset.act === 'ckMonth') { const [fid, pi] = t.dataset.key.split('|'); const f = FILES.find(x => x.id === fid); const p = f && f.parts[+pi]; if (!p) return; if (t.dataset.act === 'ckAcct') { if (!t.value) { p.ignored = true; } else { const old = acctById(p.acct); p.ignored = false; if (old && old.isNew && old.id !== t.value) { mergeAccounts(old.id, t.value); toast(`Joined “${old.name}” into ${acctById(t.value).name}.`); } p.acct = t.value; p.placedBy = 'your choice'; p.waiting = false; } } else { p.month = t.value; p.monthGuess = false; } p.checked = true; await DB.put('files', f.id, f); invalidate(); toast('Changed.'); render(); return; }
+  if (t.dataset.act === 'ckKind') { const [fid, pi] = t.dataset.key.split('|'); return ACT.picAs({ dataset: { id: fid, p: pi, k: t.value } }); }
+  if (t.dataset.act === 'ckAcct' || t.dataset.act === 'ckMonth') { const [fid, pi] = t.dataset.key.split('|'); const f = FILES.find(x => x.id === fid); const p = f && f.parts[+pi]; if (!p) return; if (t.dataset.act === 'ckAcct') { if (!t.value) { p.ignored = true; } else { const old = acctById(p.acct); p.ignored = false; if (old && old.isNew && old.id !== t.value) { mergeAccounts(old.id, t.value); toast(`Joined “${old.name}” into ${acctById(t.value).name}.`); } p.acct = t.value; p.placedBy = 'your choice'; p.waiting = false; } } else { p.month = t.value; p.monthGuess = false; } p.checked = true; await DB.put('files', f.id, f); moveUpload(f); invalidate(); toast('Changed.'); render(); return; }
   if (t.dataset.act === 'mapKind' || t.dataset.act === 'mapRow') { S.map = S.map || {}; S.map[t.dataset.key] = Object.assign(S.map[t.dataset.key] || {}, t.dataset.act === 'mapKind' ? { kind: t.value } : { hrow: +t.value - 1 }); render(); return; }
   if (t.dataset.act === 'monthSel') { S.month = t.value; S.stepI = null; render(); return; }
   if (t.dataset.act === 'oflSel') { S.ofl = t.value; S.page = 0; render(); return; }
@@ -1931,6 +1967,7 @@ window.addEventListener('unhandledrejection', e => logErr(e.reason, 'promise'));
   try { if (typeof IS_GAS !== 'undefined' && IS_GAS) gasRun('adSetState', 'diag', JSON.stringify({ v: APPV, at: new Date().toISOString(), ua: navigator.userAgent, w: innerWidth, h: innerHeight, errors: K.errors.slice(0, 10) })).catch(() => { }); } catch (e) { }
   try { syncInit(); } catch (e) { logErr(e, 'sync init'); }
   try { driveInit(); } catch (e) { logErr(e, 'drive init'); }
+  setTimeout(() => { try { ocrAll(); flushUploads(); } catch (e) { logErr(e, 'start readers'); } }, 3000);
 })();
 
 /* Audit Desk — when opened from the Google Apps Script link (no Claude needed): Drive and device sync run through the user's own Google account */
@@ -2149,6 +2186,8 @@ async function driveSync(manual) {
     DRV.msg = ({ needs_reauth: 'Google Drive needs to be connected again: claude.ai → Settings → Connectors → Google Drive.', server_not_connected: 'Google Drive is not connected: claude.ai → Settings → Connectors → add Google Drive.', not_in_manifest: 'Google Drive is not allowed for Audit Desk yet. Press “Check Drive now” and choose Allow.', approval_required: 'Google Drive needs your OK. Press “Check Drive now” and choose Allow.', consent_required: 'Google Drive needs your OK. Press “Check Drive now” and choose Allow.', selection_required: 'You have two Google Drive connectors. claude.ai asks which one to use; choose it, then press “Check Drive now”.', server_unavailable: 'Google Drive did not answer. The tool tries again in 30 minutes, or press “Check Drive now”.' })[DRV.err] || `Google Drive could not be read (${DRV.err}). Press “Check Drive now” to try again.`;
   }
   DRV.busy = false; safeRender();
+  if (typeof flushUploads === 'function') flushUploads();
+  if (typeof ocrAll === 'function') ocrAll();
 }
 function safeRender() { const a = document.activeElement; if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName) || $('#layer').innerHTML) { $$('.drvmsg').forEach(n => n.textContent = DRV.msg); return; } render(); }
 // move a locked old month's Drive files into "Audits Archive / <Account> <month>"
@@ -2265,22 +2304,62 @@ function syncStart(fixed) {
     });
   }).catch(e => logErr(e, 'sync init'));
 }
-// files added by hand also go to Google Drive, so every device gets them
+// files added by hand also go to Google Drive (any size), into "Audit Desk uploads/<account> <month>", so every device gets them
+// and places them the same way. If Drive is not connected yet, the file waits here and goes up as soon as it is.
 async function handToDrive(file, rec) {
-  if (typeof DRV === 'undefined' || !DRV.mcp || !rec || rec.driveId) return;
+  if (!rec || rec.driveId) return;
+  try { const buf = await file.arrayBuffer(); await DB.put('kv', 'pu_' + rec.id, { name: file.name, type: file.type || '', data: buf }); const L = (await DB.get('kv', 'pendUp').catch(() => null)) || []; if (!L.includes(rec.id)) { L.push(rec.id); await DB.put('kv', 'pendUp', L); } } catch (e) { logErr(e, 'keep file for drive'); }
+  flushUploads();
+}
+let UPBUSY = false;
+// a file the tool put in Drive follows a change of account or month made in Please check, so other devices place it the same way
+async function moveUpload(rec) {
   try {
+    if (!rec || !rec.handUp || !rec.driveId || typeof DRV === 'undefined' || !DRV.mcp) return;
+    const root = roots().find(r => !r.bad && r.isFolder); if (!root) return;
+    const p = rec.parts.find(q => q.acct && q.acct !== '*' && acctById(q.acct)); if (!p) return;
+    const up = await upFolder(root.id, 'Audit Desk uploads'); const sub = up && await upFolder(up, `${acctById(p.acct).name}${p.month ? ' ' + MLL(p.month) : ''}`);
+    if (!sub || sub === rec.driveParent) return;
+    await DRV.mcp.callTool(GD, 'update_file', { fileId: rec.driveId, parentId: sub }); rec.driveParent = sub; await DB.put('files', rec.id, rec);
+  } catch (e) { if (e.code !== 'needs_reauth') logErr(e, 'move file in drive'); }
+}
+async function upFolder(parent, title) {
+  const q = `parentId = '${parent}' and title = '${title.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder'`;
+  const s = pay(await gcall('search_files', { query: q, pageSize: 5, excludeContentSnippets: true }));
+  let id = s && s.files && s.files[0] && s.files[0].id;
+  if (!id) { const c = pay(await gcall('create_file', { title, contentMimeType: 'application/vnd.google-apps.folder', parentId: parent })); id = c && (c.id || (c.file && c.file.id)); }
+  return id;
+}
+async function flushUploads() {
+  if (UPBUSY || typeof DRV === 'undefined' || !DRV.mcp) return;
+  if (typeof IS_WEB !== 'undefined' && IS_WEB && !gwOk()) return;
+  UPBUSY = true;
+  try {
+    const L = (await DB.get('kv', 'pendUp').catch(() => null)) || []; if (!L.length) return;
+    const waitRead = id => { const rec = FILES.find(f => f.id === id); return rec && !rec.driveId && !rec.ocr && (rec.type === 'image' || rec.type === 'pdf') && typeof OCR !== 'undefined' && !OCR.failed && ocrBase() && Date.now() - new Date(rec.added) < 180000; };
+    if (L.every(waitRead)) return;
     const root = roots().find(r => !r.bad && r.isFolder) || null; if (!root) return;
-    const s = pay(await gcall('search_files', { query: `parentId = '${root.id}' and title = 'Audit Desk uploads' and mimeType = 'application/vnd.google-apps.folder'`, pageSize: 5, excludeContentSnippets: true }));
-    let folder = s && s.files && s.files[0] && s.files[0].id;
-    if (!folder) { const c = pay(await gcall('create_file', { title: 'Audit Desk uploads', contentMimeType: 'application/vnd.google-apps.folder', parentId: root.id })); folder = c && (c.id || (c.file && c.file.id)); }
-    if (!folder) return;
-    const buf = await file.arrayBuffer(); let content;
+    const up = await upFolder(root.id, 'Audit Desk uploads'); if (!up) return;
     let fileArgs = false; try { fileArgs = !!(await DRV.mcp.listTools()).fileArgs; } catch (e) { }
-    if (fileArgs) content = { $file: { data: buf, name: file.name, type: file.type || 'application/octet-stream' } };
-    else { if (buf.byteLength > 700000) return; let bin = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 32768) bin += String.fromCharCode.apply(null, u.subarray(i, i + 32768)); content = btoa(bin); }
-    const r = pay(await DRV.mcp.callTool(GD, 'create_file', { title: file.name, parentId: folder, base64Content: content, contentMimeType: file.type || 'application/octet-stream', disableConversionToGoogleType: true }));
-    const id = r && (r.id || (r.file && r.file.id)); if (id) { rec.driveId = id; rec.driveParent = folder; rec.handUp = true; await DB.put('files', rec.id, rec); if (DRV.seen) { DRV.seen[id] = r.modifiedTime || 'self'; DB.put('kv', 'driveSeen', DRV.seen).catch(() => { }); } }
-  } catch (e) { logErr(e, 'hand file to drive'); }
+    const big = (typeof IS_WEB !== 'undefined' && IS_WEB) || fileArgs;
+    for (const id of L.slice()) {
+      const rec = FILES.find(f => f.id === id); const x = await DB.get('kv', 'pu_' + id).catch(() => null);
+      const done = async () => { const i = L.indexOf(id); if (i > -1) L.splice(i, 1); await DB.put('kv', 'pendUp', L); DB.del ? DB.del('kv', 'pu_' + id).catch(() => { }) : DB.put('kv', 'pu_' + id, null).catch(() => { }); };
+      if (!rec || !x || !x.data || rec.driveId) { await done(); continue; }
+      if (!rec.ocr && (rec.type === 'image' || rec.type === 'pdf') && typeof OCR !== 'undefined' && !OCR.failed && ocrBase() && Date.now() - new Date(rec.added) < 180000) continue; // read it first, so it goes into the right folder
+      if (!big && x.data.byteLength > 700000) { await done(); continue; }
+      const p = rec.parts.find(q => q.acct && q.acct !== '*' && acctById(q.acct));
+      let folder = up;
+      if (p) { const sub = `${acctById(p.acct).name}${p.month ? ' ' + MLL(p.month) : ''}`; folder = (await upFolder(up, sub)) || up; }
+      let content;
+      if (fileArgs) content = { $file: { data: x.data, name: x.name, type: x.type || 'application/octet-stream' } };
+      else { let bin = ''; const u = new Uint8Array(x.data); for (let i = 0; i < u.length; i += 32768) bin += String.fromCharCode.apply(null, u.subarray(i, i + 32768)); content = btoa(bin); }
+      const r = pay(await DRV.mcp.callTool(GD, 'create_file', { title: x.name, parentId: folder, base64Content: content, contentMimeType: x.type || 'application/octet-stream', disableConversionToGoogleType: true }));
+      const fid = r && (r.id || (r.file && r.file.id));
+      if (fid) { rec.driveId = fid; rec.driveParent = folder; rec.handUp = true; await DB.put('files', rec.id, rec); if (DRV.seen) { DRV.seen[fid] = r.modifiedTime || 'self'; DB.put('kv', 'driveSeen', DRV.seen).catch(() => { }); } await done(); }
+    }
+  } catch (e) { if (e.code !== 'needs_reauth') logErr(e, 'hand file to drive'); }
+  finally { UPBUSY = false; }
 }
 
 window.addEventListener('online', () => { if (SYNC.db) Object.keys(SYNC.dirty).filter(k => SYNC.dirty[k]).forEach(syncWrite); });
@@ -2311,6 +2390,165 @@ function merge3(base, local, remote) {
   }
   return local === undefined && base !== undefined ? undefined : local !== undefined ? local : remote;
 }
+
+/* Audit Desk — reads pictures and PDFs by itself (any name): Seller Hub page or bank / Wise / card statement,
+   which account, which month, and the Seller Hub numbers. Runs in the background; nothing waits for it. */
+'use strict';
+const OCR = { worker: null, busy: false, failed: false, pdf: null };
+function ocrBase() {
+  if (typeof IS_WEB !== 'undefined' && IS_WEB) return new URL('ocr/', location.href).href;
+  return null; // the offline file and other hosts: pictures are still kept and placed, just not read
+}
+function loadJS(src) { return new Promise(res => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = () => res(true); s.onerror = () => res(false); document.head.appendChild(s); }); }
+async function ocrWorker() {
+  if (OCR.worker) return OCR.worker; if (OCR.failed) return null;
+  const base = ocrBase(); if (!base) { OCR.failed = true; return null; }
+  try {
+    if (!window.Tesseract && !(await loadJS(base + 'tesseract.min.js'))) throw new Error('reader did not load');
+    OCR.worker = await Tesseract.createWorker('eng', 1, { workerPath: base + 'worker.min.js', corePath: base + 'core', langPath: base + 'lang', gzip: true, workerBlobURL: false });
+    return OCR.worker;
+  } catch (e) { OCR.failed = true; logErr(e, 'picture reader'); return null; }
+}
+async function pdfLib() {
+  if (OCR.pdf) return OCR.pdf; const base = ocrBase(); if (!base) return null;
+  if (!window.pdfjsLib && !(await loadJS(base + 'pdf.min.js'))) return null;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = base + 'pdf.worker.min.js'; return (OCR.pdf = pdfjsLib);
+}
+// text of a PDF (first pages); a scanned PDF is turned into a picture and read
+async function pdfText(dataUrl) {
+  const L = await pdfLib(); if (!L) return null;
+  const bin = atob(dataUrl.split(',')[1] || ''); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  const doc = await L.getDocument({ data: u }).promise; let t = '';
+  for (let i = 1; i <= Math.min(doc.numPages, 3); i++) { const pg = await doc.getPage(i); const c = await pg.getTextContent(); let y = null; c.items.forEach(it => { const yy = Math.round(it.transform[5]); t += (y !== null && Math.abs(yy - y) > 3 ? '\n' : ' ') + it.str; y = yy; }); t += '\n'; }
+  if (t.replace(/\s/g, '').length > 40) return t;
+  const pg = await doc.getPage(1); const vp = pg.getViewport({ scale: 2 }); const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+  await pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+  const w = await ocrWorker(); if (!w) return null; return (await w.recognize(cv)).data.text;
+}
+
+// ---------- understanding the text ----------
+const MON3 = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+function ocrDates(t) {
+  const out = []; const s = t.toLowerCase();
+  const push = (y, m, d, i) => { y = +y; if (y < 100) y += 2000; m = +m; d = +d; if (y >= 2015 && y <= 2040 && m >= 1 && m <= 12 && d >= 1 && d <= 31) out.push({ i, v: `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` }); };
+  let m; const R1 = /\b(\d{1,2})(?:st|nd|rd|th)?[\s\-\/.]*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?[\s\-\/.]*(20\d{2}|\d{2})\b/g;
+  while ((m = R1.exec(s))) push(m[3], MON3[m[2]], m[1], m.index);
+  const R2 = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(20\d{2})\b/g;
+  while ((m = R2.exec(s))) push(m[3], MON3[m[1]], m[2], m.index);
+  const R3 = /\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](20\d{2}|\d{2})\b/g; // UK: day / month / year
+  while ((m = R3.exec(s))) push(m[3], m[2], m[1], m.index);
+  const R4 = /\b(20\d{2})-(\d{2})-(\d{2})\b/g;
+  while ((m = R4.exec(s))) push(m[1], m[2], m[3], m.index);
+  // "1 - 31 Oct 2026" / "1–31 October 2026"
+  const R5 = /\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(20\d{2})\b/g;
+  while ((m = R5.exec(s))) { push(m[4], MON3[m[3]], m[1], m.index); push(m[4], MON3[m[3]], m[2], m.index + 1); }
+  return out.sort((a, b) => a.i - b.i).map(x => x.v);
+}
+function ocrMonth(dates) {
+  if (!dates.length) return null;
+  if (dates.length >= 2 && dates[0].slice(0, 7) === dates[1].slice(0, 7)) return dates[0].slice(0, 7);
+  const c = {}; dates.forEach(d => { const k = d.slice(0, 7); c[k] = (c[k] || 0) + 1; });
+  return Object.entries(c).sort((a, b) => b[1] - a[1] || (b[0] < a[0] ? -1 : 1))[0][0];
+}
+const MONEY_RE = /(-|−|–)?\s*[£$€]?\s*(-|−)?\s*(\d{1,3}(?:[,\s]\d{3})*|\d+)[.,](\d{2})(?!\d)/g;
+function moneyIn(line) { let m, last = null; MONEY_RE.lastIndex = 0; while ((m = MONEY_RE.exec(line))) last = (m[1] || m[2] ? -1 : 1) * +(m[3].replace(/[,\s]/g, '') + '.' + m[4]); return last; }
+function intIn(line) { const m = line.replace(/[£$€]\s*[\d,.]+/g, '').match(/\b\d{1,3}(?:,\d{3})+\b|\b\d{1,6}\b/g); return m ? +m[m.length - 1].replace(/,/g, '') : null; }
+const SHOT_RE = { sales: /total sales/i, qty: /quantity sold|items sold|sold quantity/i, costs: /total selling costs|selling costs/i, ins: /insertion fee/i, fvf: /final value fee/i, reg: /regulatory operating/i, ads: /promoted listings/i, intl: /international fee/i, cred: /fee credits?/i, post: /postage labels?|shipping labels?/i, sub: /store subscription|subscription fee/i };
+function ocrShot(text) {
+  const L = text.split(/\n+/).map(x => x.trim()).filter(Boolean), out = {};
+  Object.entries(SHOT_RE).forEach(([k, re]) => {
+    const i = L.findIndex(l => re.test(l)); if (i < 0) return;
+    for (let j = i; j <= Math.min(i + 2, L.length - 1); j++) {
+      const line = j === i ? L[j].replace(re, ' ') : L[j];
+      const v = k === 'qty' ? intIn(line) : moneyIn(line);
+      if (v !== null && v !== undefined && !isNaN(v)) { out[k] = k === 'cred' ? v : Math.abs(v); break; }
+      if (j > i && SHOT_RE && Object.values(SHOT_RE).some(r => r.test(L[j]))) break;
+    }
+  });
+  return out;
+}
+const SH_WORDS = [[/seller hub/i, 3], [/total sales/i, 3], [/selling costs/i, 3], [/quantity sold/i, 3], [/final value fee/i, 3], [/insertion fee/i, 2], [/promoted listings/i, 2], [/regulatory operating/i, 2], [/store subscription/i, 2], [/fee credit/i, 2], [/funds (on hold|available)|available funds/i, 2], [/payouts?/i, 1], [/ebay/i, 1], [/orders?/i, 1], [/performance|summary/i, 1]];
+const ST_WORDS = [[/statement/i, 3], [/sort code/i, 3], [/account (number|no)/i, 3], [/\biban\b|\bbic\b|swift/i, 3], [/(opening|closing) balance|balance (brought|carried)/i, 3], [/money (in|out)|paid (in|out)/i, 3], [/lloyds|barclays|hsbc|natwest|santander|monzo|starling|revolut|\bwise\b|transferwise|payoneer|\btide\b|halifax|nationwide|metro bank/i, 3], [/card (ending|number)|debit card|credit card|visa|mastercard/i, 2], [/\bbalance\b/i, 1], [/transactions?/i, 1]];
+function classifyText(t) {
+  const sc = W => W.reduce((n, [re, w]) => n + (re.test(t) ? w : 0), 0);
+  const sh = sc(SH_WORDS), st = sc(ST_WORDS);
+  if (sh >= 4 && sh >= st) return 'screenshot';
+  if (st >= 4) return 'stmt_image';
+  if (sh >= 3 && sh > st) return 'screenshot';
+  if (t.replace(/\s/g, '').length > 80) return 'other_pic';
+  return null; // could not tell: keep what it was
+}
+function acctFromText(t) {
+  const a = guessAcct(t); if (a) return a;
+  const n = AD.norm(t); let best = null, bl = 0;
+  K.acc.forEach(x => [x.Company].filter(Boolean).forEach(c => { const v = AD.norm(String(c).replace(/\b(limited|ltd)\b/ig, '')); if (v.length >= 4 && n.includes(v) && v.length > bl) { best = x; bl = v.length; } }));
+  return best;
+}
+const PIC_KINDS = ['screenshot', 'stmt_image', 'pdf', 'other_pic'];
+const KIND_NAME = { screenshot: 'Screenshot (Seller Hub)', stmt_image: 'Statement (picture / PDF)', pdf: 'PDF (kept as proof)', other_pic: 'Picture (not an audit page)' };
+// use what was read: kind, account, month, Seller Hub numbers
+function ocrApply(rec, text) {
+  const p = rec.parts[0]; if (!p || !PIC_KINDS.includes(p.kind)) return;
+  const h = rec.hint || {}, chosen = p.placedBy === 'your choice' || p.checked;
+  rec.ocr = { at: new Date().toISOString(), len: text.length, text: text.slice(0, 4000) };
+  const kind = classifyText(text);
+  if (kind && kind !== p.kind && !chosen) {
+    if (kind === 'other_pic' && (h.acct || p.kind === 'stmt_image')) { /* picked for an audit step or named as a statement: keep it there */ }
+    else { p.kind = kind; p.label = KIND_NAME[kind]; p.check = true; p.byOcr = true; if (kind === 'other_pic') { p.notNeeded = true; } else p.notNeeded = false; }
+  }
+  if (p.kind === 'other_pic') return;
+  const a = acctFromText(text), dates = ocrDates(text), m = ocrMonth(dates);
+  if (a && !chosen) {
+    if (h.acct && h.acct !== a.id) p.notes = (p.notes || []).concat([{ t: 'warn', m: `This picture shows ${a.name}, but it was added on the ${acctById(h.acct) ? acctById(h.acct).name : ''} page. Kept where you added it; change it in Please check if needed.` }]);
+    else if (p.acct !== a.id) { p.acct = a.id; p.placedBy = 'what the picture shows'; p.waiting = false; p.check = true; }
+    else if (p.placedBy === 'best guess' || p.placedBy === 'its name') p.placedBy = 'what the picture shows';
+  }
+  if (m && !h.month && !chosen && (p.monthGuess || !p.month || p.placedBy === 'what the picture shows')) { p.month = m; p.monthGuess = false; }
+  if (p.kind === 'screenshot' && p.acct && p.acct !== '*' && p.month) {
+    const nums = ocrShot(text), key = p.acct + '|' + p.month, cur = K.shots[key];
+    if (Object.keys(nums).length && (!cur || cur.auto) && !K.locks[key]) {
+      const s = Object.assign({}, cur || {}); Object.entries(nums).forEach(([k, v]) => { if (s[k] === undefined || s[k] === '') s[k] = v; });
+      if (!s.from && dates.length >= 2) { s.from = dates[0]; s.to = dates[1]; }
+      s.auto = true; K.shots[key] = s; save('shots'); p.shotFilled = true;
+    }
+  }
+}
+async function ocrOne(rec) {
+  let text = null;
+  try {
+    if (rec.type === 'image') {
+      if (!rec.img || /^data:image\/(heic|heif)/i.test(rec.img)) { rec.ocr = { at: new Date().toISOString(), skip: 'format' }; return; }
+      const w = await ocrWorker(); if (!w) return;
+      text = (await w.recognize(rec.img)).data.text;
+    } else if (rec.type === 'pdf') {
+      if (!rec.raw) { rec.ocr = { at: new Date().toISOString(), skip: 'no copy' }; return; }
+      text = await pdfText(rec.raw);
+      if (text === null) return;
+    } else return;
+  } catch (e) { logErr(e, 'read picture ' + rec.name); rec.ocr = { at: new Date().toISOString(), skip: 'error' }; await DB.put('files', rec.id, rec).catch(() => { }); return; }
+  ocrApply(rec, text || '');
+  await DB.put('files', rec.id, rec).catch(() => { });
+}
+async function ocrAll() {
+  if (OCR.busy || OCR.failed || !ocrBase()) return; OCR.busy = true;
+  try {
+    let n = 0;
+    for (;;) {
+      const rec = FILES.find(f => !f._hist && !f.ocr && (f.type === 'image' || f.type === 'pdf') && f.parts[0] && PIC_KINDS.includes(f.parts[0].kind));
+      if (!rec) break;
+      if (!n) { DRV.msg = 'Reading pictures and PDFs…'; } n++;
+      await ocrOne(rec); if (!rec.ocr) rec.ocr = { at: new Date().toISOString(), skip: 'not read' };
+      if (S.results) S.results.forEach(r => { if (r.rec === rec || (r.rec && r.rec.id === rec.id)) r.msgs = describe(rec); });
+      invalidate(); if (typeof safeRender === 'function') safeRender();
+      if (OCR.failed) break;
+    }
+    if (n && typeof flushUploads === 'function') flushUploads();
+  } finally { OCR.busy = false; }
+}
+// one-click change of what a picture is (Please check and "Not needed")
+Object.assign(ACT, {
+  picAs: async el => { const f = FILES.find(x => x.id === el.dataset.id); if (!f) return; const p = f.parts[+(el.dataset.p || 0)]; const k = el.dataset.k; p.kind = k; p.label = KIND_NAME[k]; p.notNeeded = k === 'other_pic'; if (k !== 'other_pic' && (!p.acct || p.acct === '*')) { p.acct = bestGuessAcct(k); p.placedBy = 'best guess'; if (!p.month) p.month = latestMonth(p.acct) || AD.addMonths(thisMonth(), -1); } p.checked = k === 'other_pic'; p.check = true; await DB.put('files', f.id, f); if (typeof moveUpload === 'function') moveUpload(f); invalidate(); toast(k === 'other_pic' ? 'Moved to Not needed.' : `Now used as ${KIND_NAME[k]}.`); render(); }
+});
 
 /* Audit Desk — Back / Forward between screens, Undo / Redo for every change */
 'use strict';
