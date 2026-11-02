@@ -812,7 +812,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '1.4.1';
+const APPV = '1.5.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -1591,7 +1591,7 @@ function render() {
   try {
     shell();
     const hide = ROLE_HIDE[K.prefs.viewAs] || []; if (hide.includes(S.view)) S.view = 'home';
-    $('#view').innerHTML = (typeof crumbs === 'function' && S.view !== 'home' ? crumbs() : '') + (V[S.view] || V.home)();
+    $('#view').innerHTML = (typeof gwBanner === 'function' ? gwBanner() : '') + (typeof crumbs === 'function' && S.view !== 'home' ? crumbs() : '') + (V[S.view] || V.home)();
     if (typeof navPush === 'function') { navPush(); navButtons(); }
   } catch (e) { logErr(e, 'render ' + S.view); $('#view').innerHTML = `<div class="card"><div class="check w">This screen could not be shown: ${esc(e.message)}</div><div class="row" style="margin-top:8px"><button class="btn" data-act="copyErr">Copy error for Claude</button><button class="btn" data-go="home">Go to Home</button></div></div>`; }
 }
@@ -1980,6 +1980,93 @@ async function updateTool(file) {
 }
 Object.assign(ACT, { updTool: () => { const i = document.createElement('input'); i.type = 'file'; i.onchange = () => i.files[0] && updateTool(i.files[0]); i.click(); } });
 
+/* Audit Desk — website version: "Sign in with Google" (aemporio6) and Google Drive read/write straight from the browser */
+'use strict';
+const GCLIENT = '605045779540-i1fjvdt40h3aaf3j0iv337g5tvvjmd0h.apps.googleusercontent.com';
+const IS_WEB = !IS_GAS && !(window.claude && window.claude.use) && /^https?:$/.test(location.protocol);
+const GW = { token: null, exp: 0, email: '', client: null, waiters: [], need: false };
+try { GW.email = localStorage.getItem('ad-gmail') || ''; } catch (e) { }
+function gwLoadLib() {
+  return new Promise(res => { if (window.google && google.accounts && google.accounts.oauth2) return res(true); const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.onload = () => res(true); s.onerror = () => res(false); document.head.appendChild(s); });
+}
+async function gwInitClient() {
+  if (GW.client) return true; if (!(await gwLoadLib())) return false;
+  GW.client = google.accounts.oauth2.initTokenClient({
+    client_id: GCLIENT, scope: 'https://www.googleapis.com/auth/drive openid email',
+    callback: r => { if (r && r.access_token) { GW.token = r.access_token; GW.exp = Date.now() + ((+r.expires_in || 3600) - 120) * 1000; GW.need = false; GW.waiters.splice(0).forEach(f => f(true)); gwAfterLogin(); } else GW.waiters.splice(0).forEach(f => f(false)); },
+    error_callback: () => GW.waiters.splice(0).forEach(f => f(false))
+  });
+  return true;
+}
+// must be called from a tap (Google opens a small window)
+async function gwSignIn() {
+  if (!(await gwInitClient())) { toast('Google sign-in could not load. Check the internet connection.'); return false; }
+  return new Promise(res => { GW.waiters.push(res); GW.client.requestAccessToken({ prompt: GW.email ? '' : 'consent', login_hint: GW.email || undefined }); });
+}
+const gwOk = () => GW.token && Date.now() < GW.exp;
+async function gwAfterLogin() {
+  try { const r = await gwFetch('https://www.googleapis.com/drive/v3/about?fields=user'); const j = await r.json(); GW.email = (j.user && j.user.emailAddress) || ''; localStorage.setItem('ad-gmail', GW.email); } catch (e) { }
+  DRV.mcp = GDRIVE; SYNC.db = SYNC.db || null;
+  if (!SYNC.db) syncStart(GWDB);
+  toast(`Connected to Google Drive${GW.email ? ' (' + GW.email + ')' : ''}.`); render(); driveSync(false);
+}
+async function gwFetch(url, opt = {}) {
+  if (!gwOk()) { GW.need = true; shell(); throw Object.assign(new Error('Google sign-in needed'), { code: 'needs_reauth' }); }
+  const r = await fetch(url, Object.assign({}, opt, { headers: Object.assign({ Authorization: 'Bearer ' + GW.token }, opt.headers || {}) }));
+  if (r.status === 401) { GW.token = null; GW.need = true; shell(); throw Object.assign(new Error('Google sign-in expired'), { code: 'needs_reauth' }); }
+  if (!r.ok) { const t = await r.text().catch(() => ''); throw Object.assign(new Error(`Google Drive ${r.status}: ${t.slice(0, 200)}`), { code: r.status >= 500 ? 'server_unavailable' : 'tool_error' }); }
+  return r;
+}
+const DAPI = 'https://www.googleapis.com/drive/v3/files';
+const FIELDS = 'id,name,mimeType,modifiedTime,size,parents,webViewLink';
+const toMeta = f => ({ id: f.id, title: f.name, mimeType: f.mimeType, modifiedTime: f.modifiedTime, fileSize: f.size, size: f.size, parentId: (f.parents || [])[0], viewUrl: f.webViewLink });
+function toV3(q) { return q.replace(/parentId = '([^']+)'/g, "'$1' in parents").replace(/\btitle\b/g, 'name') + " and trashed = false"; }
+function b64(buf) { const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode.apply(null, u.subarray(i, i + 32768)); return btoa(s); }
+// same interface the Drive code already uses (search_files, get_file_metadata, download_file_content, create_file, update_file)
+const GDRIVE = {
+  async listTools() { return { fileArgs: false, servers: [] }; },
+  async callTool(server, tool, i) {
+    let p;
+    if (tool === 'search_files') {
+      const u = new URL(DAPI); u.searchParams.set('q', toV3(i.query)); u.searchParams.set('pageSize', String(Math.min(i.pageSize || 100, 1000))); u.searchParams.set('fields', `nextPageToken,files(${FIELDS})`); u.searchParams.set('supportsAllDrives', 'true'); u.searchParams.set('includeItemsFromAllDrives', 'true'); if (i.pageToken) u.searchParams.set('pageToken', i.pageToken);
+      const j = await (await gwFetch(u)).json(); p = { files: (j.files || []).map(toMeta), nextPageToken: j.nextPageToken };
+    } else if (tool === 'get_file_metadata') {
+      p = toMeta(await (await gwFetch(`${DAPI}/${i.fileId}?fields=${FIELDS}&supportsAllDrives=true`)).json());
+    } else if (tool === 'download_file_content') {
+      const url = i.exportMimeType ? `${DAPI}/${i.fileId}/export?mimeType=${encodeURIComponent(i.exportMimeType)}` : `${DAPI}/${i.fileId}?alt=media&supportsAllDrives=true`;
+      p = { content: b64(await (await gwFetch(url)).arrayBuffer()) };
+    } else if (tool === 'create_file') {
+      const meta = { name: i.title, mimeType: i.contentMimeType === 'application/vnd.google-apps.folder' ? i.contentMimeType : undefined, parents: i.parentId ? [i.parentId] : undefined };
+      if (meta.mimeType) p = toMeta(await (await gwFetch(`${DAPI}?fields=${FIELDS}&supportsAllDrives=true`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(meta) })).json());
+      else { const bin = Uint8Array.from(atob(i.base64Content || ''), c => c.charCodeAt(0)); const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' })); fd.append('file', new Blob([bin], { type: i.contentMimeType || 'application/octet-stream' })); p = toMeta(await (await gwFetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=${FIELDS}&supportsAllDrives=true`, { method: 'POST', body: fd })).json()); }
+    } else if (tool === 'update_file') {
+      const cur = await (await gwFetch(`${DAPI}/${i.fileId}?fields=parents&supportsAllDrives=true`)).json();
+      p = toMeta(await (await gwFetch(`${DAPI}/${i.fileId}?addParents=${i.parentId}&removeParents=${(cur.parents || []).join(',')}&fields=${FIELDS}&supportsAllDrives=true`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json());
+    } else throw Object.assign(new Error('unknown ' + tool), { code: 'bad_request' });
+    return { payload: p, content: [] };
+  }
+};
+// data the same on every device: one file "Audit Desk data.json" in the signed-in Drive
+const GWDB = (() => {
+  const subs = {}; const last = {}; let fileId = null, timer = null, busy = Promise.resolve();
+  async function find() { if (fileId) return fileId; const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id,modifiedTime)'); u.searchParams.set('orderBy', 'modifiedTime desc'); const j = await (await gwFetch(u)).json(); if (j.files && j.files[0]) return (fileId = j.files[0].id); const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: 'Audit Desk data.json', mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob(['{}'], { type: 'application/json' })); const c = await (await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd })).json(); return (fileId = c.id); }
+  async function readAll() { const id = await find(); const t = await (await gwFetch(`${DAPI}/${id}?alt=media`)).text(); try { return JSON.parse(t || '{}'); } catch (e) { return {}; } }
+  async function poll() { if (!gwOk()) return; try { const all = await readAll(); Object.keys(subs).forEach(path => { const k = path.split('/')[1], v = all[k], s = JSON.stringify(v || null); if (last[path] === s) return; last[path] = s; subs[path].forEach(f => f({ exists: !!v, data: () => v, fromCache: false, hasPendingWrites: false })); }); } catch (e) { if (e.code !== 'needs_reauth') logErr(e, 'drive data'); } }
+  return {
+    doc: path => ({
+      set: body => (busy = busy.then(async () => { const all = await readAll(); all[path.split('/')[1]] = body; last[path] = JSON.stringify(body); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(all) }); })),
+      onSnapshot: next => { (subs[path] = subs[path] || []).push(next); clearTimeout(timer); timer = setTimeout(() => { poll(); setInterval(poll, 45000); document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); }); }, 50); return () => { }; }
+    })
+  };
+})();
+// the banner that asks for the one tap
+function gwBanner() {
+  if (!IS_WEB) return '';
+  if (gwOk() && !GW.need) return '';
+  return `<div class="check w" style="justify-content:space-between;flex-wrap:wrap">${GW.email ? `Tap to reconnect Google Drive (${esc(GW.email)}).` : 'Connect your Google Drive (aemporio6@gmail.com) so the tool reads the files by itself and keeps the same data on every device.'} <button class="btn sm pri" data-act="gwSignIn">${GW.email ? 'Reconnect Google' : 'Sign in with Google'}</button></div>`;
+}
+Object.assign(ACT, { gwSignIn: () => gwSignIn() });
+
 /* Audit Desk — reads Google Drive by itself (inside the private Audit Desk link, through the viewer's Google Drive connector) */
 'use strict';
 const GD = 'Google Drive';
@@ -2073,6 +2160,7 @@ async function driveArchive(acct, m, recs) {
 }
 async function driveInit() {
   if (IS_GAS) DRV.mcp = GASMCP;
+  else if (IS_WEB) { if (gwOk()) DRV.mcp = GDRIVE; else return; }
   else { if (!(window.claude && window.claude.use)) return; try { DRV.mcp = await window.claude.use('mcp'); } catch (e) { DRV.mcp = null; } }
   if (!DRV.mcp) return;
   render(); await driveSync(false);
@@ -2081,6 +2169,7 @@ async function driveInit() {
 }
 function driveCard() {
   const inLink = IS_GAS || !!(window.claude && window.claude.use);
+  if (!DRV.mcp && IS_WEB) return `<div class="card"><h2>Google Drive</h2>${gwBanner()}<p class="note">After signing in, the tool reads the Drive folders by itself every time it opens and every 30 minutes.</p></div>`;
   if (!DRV.mcp) return `<div class="card"><h2>Google Drive</h2><p class="note">${inLink ? 'Connecting to Google Drive…' : 'Google Drive is not connected yet. Until then, add files with the box below (on a phone you can pick files from Google Drive). Soon: Sign in with Google (aemporio6) and the tool reads the Drive folders by itself.'}</p></div>`;
   return `<div class="card"><div class="row between"><h2>Google Drive · read by itself</h2><button class="btn pri" data-act="driveNow" ${DRV.busy ? 'disabled' : ''}>${DRV.busy ? 'Reading…' : 'Check Drive now'}</button></div>
   <p class="note"><span class="drvmsg">${esc(DRV.msg || '')}</span>${K.prefs.driveLast ? ` · last check ${esc(new Date(K.prefs.driveLast).toLocaleString('en-GB'))}` : ''}</p>${DRV.busy ? `<div class="bar"><i id="drvbar" style="width:${DRV.total ? Math.round(100 * DRV.n / DRV.total) : 3}%"></i></div>` : ''}
@@ -2145,8 +2234,12 @@ async function syncWrite(k) {
 }
 let _syncRender = null;
 function syncInit() {
+  if (IS_WEB) return; // starts after Sign in with Google
   if (!IS_GAS && !(window.claude && window.claude.use)) return;
-  (IS_GAS ? Promise.resolve(GASDB) : window.claude.use('db')).then(db => {
+  syncStart(IS_GAS ? GASDB : null);
+}
+function syncStart(fixed) {
+  (fixed ? Promise.resolve(fixed) : window.claude.use('db')).then(db => {
     if (!db) return; SYNC.db = db; setSync('wait');
     const t = setTimeout(() => { if (SYNC.state === 'wait') setSync('offline'); }, 10000);
     SYNC_KEYS.forEach(k => {
