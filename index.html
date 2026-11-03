@@ -163,6 +163,14 @@ html.phone .nextbar .grow{flex:1 1 calc(100% - 44px)}html.phone .nextbar>.row{fl
 .score.s-ok{border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}.score.s-warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}.score.s-bad{border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
 .score.s-ok .bar i{background:var(--ok)}.score.s-warn .bar i{background:var(--warn)}.score.s-bad .bar i{background:var(--bad)}
 
+#lockscr{position:fixed;inset:0;z-index:500;background:var(--bg);display:grid;place-items:center;padding:16px}
+#lockscr .lkbox{width:min(360px,100%);background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px;display:flex;flex-direction:column;gap:12px;align-items:stretch;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.12)}
+#lockscr .lklogo{width:72px;height:72px;margin:0 auto}#lockscr .lklogo svg{width:100%;height:100%}#lockscr h1{margin:0}
+#lockscr form{display:flex;gap:8px}#lockscr form input{flex:1}.lkbig{padding:14px;font-size:15px}
+html.locked .app,html.locked #wm{visibility:hidden}
+.printhead,.printfoot{display:none}
+@media print{.printhead{display:flex;gap:12px;align-items:center;border-bottom:2px solid #173f78;padding-bottom:8px;margin-bottom:12px}.printhead .lg{width:42px;height:42px}.printhead .lg svg{width:100%;height:100%}.printfoot{display:block;position:fixed;bottom:0;left:0;right:0;font-size:9px;color:#666;text-align:center}#wm{display:block!important;left:50%!important;opacity:.07!important;animation:none!important}.nextbar,#helppop,#lockscr{display:none!important}}
+
 html.phone .app{grid-template-columns:1fr}
 html.phone .rail{display:none}
 html.phone main{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px))}
@@ -379,7 +387,7 @@ R.push({
     if (ix['Final value fee – fixed'] < 0) ix['Final value fee – fixed'] = findCol(H, ['Final value fee - fixed', 'Final value fee fixed']);
     if (ix['Final value fee – variable'] < 0) ix['Final value fee – variable'] = findCol(H, ['Final value fee - variable', 'Final value fee variable']);
     const unused = H.map((h, i) => ({ h, i })).filter(x => x.h && !TXN_COLS.some(c => ix[c] === x.i && USED_TXN.has(c)));
-    const lines = [], aside = [];
+    const lines = [], aside = [], extra = {};
     for (let r = hi + 1; r < rows.length; r++) {
       const row = rows[r];
       if (!row || row.every(c => String(c).trim() === '' )) continue;
@@ -396,9 +404,10 @@ R.push({
       if (!type || !L.date) { aside.push({ row: r + 1, reason: !type ? 'No type' : 'No date', values: row.slice(0, 12) }); continue; }
       if (!KNOWN_TYPES.includes(type)) { L.unknownType = true; aside.push({ row: r + 1, reason: `New line type "${type}" (amount kept in totals)`, values: row.slice(0, 12) }); }
       lines.push(L);
+      if (L.order) unused.slice(0, 25).forEach(x => { const v = row[x.i]; if (v === '' || v == null || v === '--') return; const e = extra[x.h] = extra[x.h] || {}; if (e[L.order] === undefined) e[L.order] = v; });
     }
     const month = meta.start ? monthOf(meta.start) : majorityMonth(lines.map(l => l.date));
-    return { seller: meta.seller, start: meta.start, end: meta.end, month, lines, unusedCols: unused.map(x => x.h), aside, count: lines.length };
+    return { seller: meta.seller, start: meta.start, end: meta.end, month, lines, unusedCols: unused.map(x => x.h), aside, count: lines.length, extra };
   }
 });
 
@@ -475,8 +484,9 @@ R.push({
       out.push({ order: o, cost: ix.cost > -1 ? P(row[ix.cost]) : 0, costRaw: ix.cost > -1 ? num(row[ix.cost]) : null, ae: ae.length >= 8 ? ae : '', qty: ix.qty > -1 ? num(row[ix.qty]) : null, status: ix.status > -1 ? String(row[ix.status] || '').trim() : '', earn: ix.earn > -1 ? num(row[ix.earn]) : null, trk: ix.trk > -1 ? String(row[ix.trk] || '').trim() : '', sku: ix.sku > -1 ? String(row[ix.sku] || '').trim() : '', pay: ix.pay > -1 ? String(row[ix.pay] || '').trim() : '', tab: sh.name, row: r + 1 });
     }
     const used = Object.values(ix).filter(i => i > -1);
+    const extra = {}; { const un = H.map((h, i) => ({ h: String(h).trim(), i })).filter(x => x.h && !used.includes(x.i)).slice(0, 25); for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const o = cleanOrder(row[ix.order]); if (!o) continue; un.forEach(x => { const v = row[x.i]; if (v === '' || v == null) return; const e = extra[x.h] = extra[x.h] || {}; if (e[o] === undefined) e[o] = v instanceof Date ? v.toISOString().slice(0, 10) : v; }); } }
     if (refundTab) return { kind: 'ae_refunds', label: 'AliExpress refunds list (from VA)', rows: out.map(x => ({ order: x.order, ae: x.ae, amount: x.cost, status: x.status })), count: out.length, aside, unusedCols: [] };
-    return { rows: out, count: out.length, aside, cols: Object.fromEntries(Object.entries(ix).map(([k, i]) => [k, i > -1 ? H[i] : null])), unusedCols: H.filter((h, i) => String(h).trim() && !used.includes(i)) };
+    return { rows: out, count: out.length, aside, cols: Object.fromEntries(Object.entries(ix).map(([k, i]) => [k, i > -1 ? H[i] : null])), unusedCols: H.filter((h, i) => String(h).trim() && !used.includes(i)), extra };
   }
 });
 
@@ -651,7 +661,7 @@ AD.auditEbay = function (txn, orders, ctx) {
   const sites = {};
   const site = ccy => ccy === 'USD' ? 'US ($)' : ccy === 'EUR' ? 'EU (€)' : ccy === 'AUD' ? 'AU (A$)' : ccy === 'CAD' ? 'CA (C$)' : 'UK (£)';
   const ordersInTxn = new Map(); // order -> {gross, net, fees, ads, refund, qty, sku, date, site, title, items}
-  const getO = (o, l) => { let x = ordersInTxn.get(o); if (!x) { x = { order: o, gross: 0, net: 0, fees: 0, ads: 0, refund: 0, claim: 0, qty: 0, skus: [], titles: [], date: null, site: site(l.bccy), sold: false, held: 0, inad: 0, below: 0, postage: 0 }; ordersInTxn.set(o, x); } return x; };
+  const getO = (o, l) => { let x = ordersInTxn.get(o); if (!x) { x = { order: o, gross: 0, net: 0, fees: 0, ads: 0, refund: 0, claim: 0, qty: 0, skus: [], titles: [], date: null, site: site(l.bccy), sold: false, held: 0, inad: 0, below: 0, postage: 0, dispute: 0, refundDates: [] }; ordersInTxn.set(o, x); } return x; };
   const otherFeeKinds = {}; const unknown = {};
   L.forEach(l => {
     const t = l.type;
@@ -678,7 +688,7 @@ AD.auditEbay = function (txn, orders, ctx) {
       } else {
         add(t === 'Refund' ? 'refunds' : t === 'Claim' ? 'claims' : 'disputes', g);
         add('feeCredits', f);
-        if (l.order) { const o = getO(l.order, l); o.net += l.net; o[t === 'Claim' ? 'claim' : 'refund'] += g; o.fees += -f; }
+        if (l.order) { const o = getO(l.order, l); o.net += l.net; o[t === 'Claim' ? 'claim' : 'refund'] += g; if (t === 'Payment dispute') o.dispute += g; o.fees += -f; if (l.date) o.refundDates.push(l.date); }
       }
     } else if (t === 'Other fee') {
       const d = l.desc || 'Other fee'; otherFeeKinds[d] = (otherFeeKinds[d] || 0) + l.net;
@@ -732,9 +742,19 @@ AD.auditEbay = function (txn, orders, ctx) {
       if (o.inad) flags.push('Item Not As Described fee');
       if (o.held) flags.push('Money held by eBay');
     } else if (o.refund || o.claim) { flags.push('Refund for an order from an earlier month'); }
+    // what kind of refund this is
+    let rtype = '', rpct = 0; const back = -(o.refund + o.claim);
+    if (back > 0 || o.refund || o.claim) {
+      rpct = o.gross > 0 ? Math.round(1000 * back / o.gross) / 10 : 100;
+      if (!o.sold) rtype = 'Refund of an earlier month’s order';
+      else if (o.dispute) rtype = 'Payment dispute (bank chargeback)';
+      else if (o.claim) rtype = back >= o.gross - 1 ? 'eBay claim · full' : 'eBay claim · part';
+      else if (back >= o.gross - 1) rtype = orders && !o.trk && (o.refundDates[0] || '9') <= addDays(o.date, 3) ? 'Cancelled before sending · full refund' : 'Full refund';
+      else rtype = `Part refund · ${rpct}%`;
+    }
     const profit = o.net - (o.sold && cost ? cost : 0);
     if (o.sold && cost !== null && profit < 0 && !fullyRefunded) flags.push('Loss-making order');
-    OL.push({ order: o.order, date: o.date, site: o.site, qty: o.qty, sku: o.skus.map(s => s.sku).join(', '), title: o.titles[0] || '', gross: o.gross, fees: o.fees, ads: o.ads, refund: o.refund + o.claim, net: o.net, cost: cost, costSrc: src, ae, profit: cost !== null || !o.sold ? profit : null, held: o.held, trk: o.trk || (va && va.trk) || '', vaStatus: va ? va.status : '', flags, refunded: fullyRefunded });
+    OL.push({ order: o.order, date: o.date, site: o.site, qty: o.qty, sku: o.skus.map(s => s.sku).join(', '), title: o.titles[0] || '', gross: o.gross, fees: o.fees, ads: o.ads, refund: o.refund + o.claim, net: o.net, cost: cost, costSrc: src, ae, profit: cost !== null || !o.sold ? profit : null, held: o.held, trk: o.trk || (va && va.trk) || '', vaStatus: va ? va.status : '', flags, refunded: fullyRefunded, rtype, rpct, back, claim: o.claim, dispute: o.dispute, refundDate: o.refundDates[0] || null });
   });
   // statement matching
   const stm = ctx.statements || []; let payMatch = null, aeMatch = null;
@@ -760,6 +780,7 @@ AD.auditEbay = function (txn, orders, ctx) {
     plCheck, orMatch, sites, orders: OL, cogs, supplierRefunds, costKnown, nCostMissing, profit, health, payMatch, aeMatch
   };
 };
+function addDays(d, n) { if (!d) return null; const t = new Date(Date.parse(d) + n * 864e5); return t.toISOString().slice(0, 10); }
 function within(d, ref, lo, hi) { if (!d || !ref) return false; const a = Date.parse(d), b = Date.parse(ref); const k = (a - b) / 864e5; return k >= lo && k <= hi; }
 
 // Build cost maps from VA rows + stock rows (priority rules from the plan)
@@ -864,7 +885,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '1.9.0';
+const APPV = '2.0.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -932,7 +953,7 @@ const DEFAULT_ACC = [
   { id: 'vcom', name: 'VCOM', seller: 'rumi-bazar-eu', aliases: ['BAY-101A', 'VCOM'], Team: 'Team Junaid', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Own stock', va: 'Junaid (VA)', vat: 'Not VAT registered', cf: {} },
   { id: 'com365', name: 'Com365', seller: '', aliases: ['BAY-106', 'Com365'], Team: 'Team Ahsan', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Dropship', va: 'Ahsan (VA)', vat: 'Not VAT registered', cf: {} }
 ];
-const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [] };
+const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [], offRefunds: {} };
 const KEYS = Object.keys(K);
 async function loadAll() {
   persisted.ok = await DB.open();
@@ -1572,13 +1593,13 @@ V.audit = () => {
   const m = S.month, g = steps(a.id, m), A = g.A, lock = K.locks[a.id + '|' + m];
   const idx = g.next ? g.S.indexOf(g.next) : g.S.length;
   if (m >= thisMonth()) { const lm = AD.addMonths(thisMonth(), -1); return `<div class="row between"><div><h1>${esc(a.name)} · ${MLL(m)}</h1><p class="sub">${esc(a.Platform)} · ${esc(a.seller || '')} · ${esc(a.Team || 'No team')}</p></div><select class="in" data-act="monthSel" aria-label="Month">${lastMonths(14).map(x => `<option value="${x}" ${x === m ? 'selected' : ''}>${MLL(x)}</option>`).join('')}</select></div><div class="card"><div class="check">${MLL(m)} is still running. Its files are taken from Drive after the month ends, on 1 ${MLL(AD.addMonths(m, 1))}.</div><div class="row" style="margin-top:10px"><button class="btn pri" data-act="goAudit" data-acct="${a.id}" data-month="${lm}">Open ${MLL(lm)} instead</button></div></div>`; }
-  const head = `<div class="row between"><div><h1>${esc(a.name)} · ${MLL(m)}</h1><p class="sub">${esc(a.Platform)} · ${esc(a.seller || '')} · ${esc(a.Team || 'No team')} · ${esc(a.type)}</p></div><div class="row"><select class="in" data-act="monthSel" aria-label="Month">${lastMonths(14).map(x => `<option value="${x}" ${x === m ? 'selected' : ''}>${MLL(x)}</option>`).join('')}</select>${A && A.sums ? `<button class="btn" data-act="xlsx">Download Excel</button><button class="btn" data-act="print">PDF / Print</button>` : ''}${lock ? `<button class="btn" data-act="unlock">Unlock</button>` : A && !A.error ? `<button class="btn pri" data-act="lock">Approve and lock</button>` : ''}</div></div>`;
+  const head = `<div class="row between"><div><h1>${esc(a.name)} · ${MLL(m)}</h1><p class="sub">${esc(a.Platform)} · ${esc(a.seller || '')} · ${esc(a.Team || 'No team')} · ${esc(a.type)}</p></div><div class="row"><select class="in" data-act="monthSel" aria-label="Month">${lastMonths(14).map(x => `<option value="${x}" ${x === m ? 'selected' : ''}>${MLL(x)}</option>`).join('')}</select>${A && A.sums ? `<button class="btn" data-act="xlsx">Download Excel</button><button class="btn" data-act="word">Word</button><button class="btn" data-act="print">PDF / Print</button>` : ''}${lock ? `<button class="btn" data-act="unlock">Unlock</button>` : A && !A.error ? `<button class="btn pri" data-act="lock">Approve and lock</button>` : ''}</div></div>`;
   const guide = `<div class="card noprint"><div class="row between"><h2>Steps for this audit</h2><span class="note">${g.S.filter(s => s.done).length} of ${g.S.length} done</span></div>
    <div class="steps">${g.S.map((s, i) => `<button class="step ${s.done ? 'done' : i === idx ? 'cur' : ''}" data-act="stepOpen" data-i="${i}"><span class="sn">${s.skipped ? '–' : s.done ? '✓' : i + 1}</span><span>${esc(s.t)}${s.skipped ? ' <small>(not available)</small>' : ''}${s.need ? '' : ' <small>(optional)</small>'}</span></button>`).join('')}</div>
    ${(() => { const s = g.S[S.stepI != null && S.stepI < g.S.length ? S.stepI : Math.min(idx, g.S.length - 1)]; if (!s) return ''; return `<div class="stepbox"><div class="t" style="font-weight:700">${s.skipped ? 'Not available: ' : s.done ? '✓ Done: ' : 'Now: '}${esc(s.t)}</div><div class="note">${esc(s.why)}</div><ol>${s.how.map(h => `<li>${esc(h)}</li>`).join('')}</ol>${s.kind && !s.done ? `<div class="note">${typeof DRV !== 'undefined' && DRV.mcp ? `⟳ The tool is watching Google Drive for this file and takes it by itself. <b class="drvmsg">${esc(DRV.msg || '')}</b>` : 'Open your Audit Desk link and the tool takes it from Google Drive by itself.'}</div>` : ''}<div class="row">${s.kind && typeof DRV !== 'undefined' && DRV.mcp && !s.done ? `<button class="btn pri" data-act="driveNow">${DRV.busy ? 'Reading Drive…' : 'Check Drive now'}</button>` : ''}${s.kind ? `<button class="btn" data-act="pick" data-acct="${a.id}" data-month="${m}">${s.done ? 'Add a newer one by hand' : 'Add by hand instead'}</button>` : ''}${s.k === 'review' ? `<button class="btn pri" data-act="tab" data-t="issues">Show the issues</button>` : ''}${s.k === 'lock' && !lock && A && !A.error ? `<button class="btn pri" data-act="lock">Approve and lock</button>` : ''}${s.k === 'shot' ? `<button class="btn" data-act="shot">Type screenshot numbers</button>` : ''}${s.k === 'va' || s.k === 'txn' || s.k === 'ord' ? `<button class="btn" data-act="copyVA" data-acct="${a.id}" data-month="${m}">Copy instructions for VA</button>` : ''}${!s.done && s.k !== 'review' && s.k !== 'lock' ? `<button class="btn" data-act="stepSkip" data-k="${s.k}">Not available</button>` : ''}${s.skipped ? `<button class="btn" data-act="stepUnskip" data-k="${s.k}">I have it now</button>` : ''}${!s.need && !s.done ? `<span class="note">Optional. The audit works without it.</span>` : ''}</div></div>`; })()}</div>`;
   if (!A) return head + guide + `<div class="card"><p class="sub">No ${esc(a.Platform)} report for ${MLL(m)} yet. Follow step 1 above.</p></div>`;
   if (A.error) return head + guide + `<div class="card"><div class="check w">The audit stopped: ${esc(A.error)}</div><div class="row" style="margin-top:8px"><button class="btn" data-act="copyErr">Copy error for Claude</button></div></div>`;
-  const tabs = A.kind === 'ebay' ? [['summary', 'Summary'], ['pnl', 'Profit & loss'], ['cash', 'Cash & payouts'], ['sites', 'By site'], ['orders', 'Orders'], ['issues', 'Issues'], ['shot', 'Screenshot check'], ['vat', 'VAT'], ['files', 'Files']] : [['summary', 'Summary'], ['files', 'Files']];
+  const tabs = A.kind === 'ebay' ? [['summary', 'Summary'], ['pnl', 'Profit & loss'], ['cash', 'Cash & payouts'], ['sites', 'By site'], ['orders', 'Orders'], ['refunds', 'Refunds'], ['skus', 'SKU profit'], ['issues', 'Issues'], ['shot', 'Screenshot check'], ['vat', 'VAT'], ['files', 'Files']] : [['summary', 'Summary'], ['files', 'Files']];
   return head + guide + `<div class="tabs noprint" role="tablist">${tabs.map(([k, l]) => `<button class="tab ${S.tab === k ? 'on' : ''}" data-act="tab" data-t="${k}" role="tab">${l}</button>`).join('')}</div>` + (T[S.tab] || T.summary)(a, m, A);
 };
 const T = {};
@@ -3152,5 +3173,225 @@ function scoreCard(a, m, A) {
 }
 const _tsum = T.summary;
 T.summary = (a, m, A) => (A && A.kind === 'ebay' ? scoreCard(a, m, A) : '') + _tsum(a, m, A) + expCard(a, m);
+
+/* Audit Desk v2 — refunds by kind (and refunds paid outside eBay), SKU profit with ads, import review,
+   app lock (fingerprint / face / password, never blocks), and the logo on every download. */
+'use strict';
+
+// ====================== refunds paid outside eBay ======================
+const offKey = (a, m, o) => `${a}|${m}|${o}`;
+const _getAudit = getAudit;
+getAudit = function (acctId, month) {
+  const A = _getAudit(acctId, month);
+  if (A && A.kind === 'ebay' && !A._v2) {
+    A._v2 = true; let off = 0; const pre = `${acctId}|${month}|`;
+    Object.entries(K.offRefunds || {}).forEach(([k, v]) => { if (!k.startsWith(pre)) return; const o = A.orders.find(x => x.order === k.slice(pre.length)); const amt = Math.round(+v.amt || 0); off += amt; if (o) { o.off = amt; o.offNote = v.note || ''; if (o.profit !== null) o.profit -= amt; if (!o.rtype) o.rtype = 'Refund paid outside eBay'; else o.rtype += ' + paid outside eBay'; } });
+    A.offRefund = off; A.profit -= off;
+  }
+  return A;
+};
+const _orderDrawer = orderDrawer;
+orderDrawer = function (o) {
+  _orderDrawer(o);
+  try {
+    const A = getAudit(S.acct, S.month), O = A && A.orders.find(x => x.order === o); const d = $('#layer .drawer'); if (!O || !d) return;
+    const k = offKey(S.acct, S.month, o), v = (K.offRefunds || {})[k], locked = !!K.locks[S.acct + '|' + S.month];
+    const ex = extraFor(S.acct, S.month, o);
+    d.querySelector('.calc').insertAdjacentHTML('afterend', `<div class="card" style="margin:10px 0"><h2>Refund ${help('What happened to the money of this order. “Paid outside eBay” is money you sent the buyer yourself (bank, PayPal, cash); it comes off the profit.')}</h2>
+      <p>${O.rtype ? `<b>${esc(O.rtype)}</b>${O.back ? ` · ${fmt(O.back)} of ${fmt(O.gross)} given back${O.rpct ? ' (' + O.rpct + '%)' : ''}` : ''}${O.refundDate ? ' · on ' + esc(O.refundDate) : ''}` : 'No refund on eBay.'}${O.gross && !O.net && O.refunded ? '<br><span class="note">The net is £0.00 because the whole sale went back to the buyer. eBay also gave back its fees.</span>' : ''}</p>
+      ${v ? `<div class="li"><div class="grow"><b>Paid outside eBay: ${fmt(+v.amt)}</b>${v.note ? ' · ' + esc(v.note) : ''}<div class="note">Added by ${esc(v.by || '')} on ${esc(String(v.at || '').slice(0, 10))}</div></div>${locked ? '' : `<button class="btn sm" data-act="offDel" data-k="${esc(k)}">Remove</button>`}</div>` : locked ? '<p class="note">The month is locked.</p>' : `<div class="row" style="flex-wrap:wrap;gap:6px"><input class="in" id="off_amt" inputmode="decimal" placeholder="£ paid outside eBay" style="width:150px" data-help="Money you sent the buyer yourself, not through eBay."><input class="in" id="off_note" placeholder="How / note (e.g. PayPal, half refund agreed)" style="flex:1;min-width:160px"><button class="btn sm pri" data-act="offSave" data-k="${esc(k)}">Save</button></div>`}</div>
+      ${ex.length ? `<div class="card" style="margin:10px 0"><h2>Other columns from the files</h2><div class="calc">${ex.map(([c, x]) => `<span class="l">${esc(c)}</span><span>${esc(String(x))}</span>`).join('')}</div></div>` : ''}`);
+  } catch (e) { logErr(e, 'order refund'); }
+};
+Object.assign(ACT, {
+  offSave: async el => { const v = AD.num(($('#off_amt') || {}).value); if (v === null || !(v > 0)) { toast('Type the amount in £.'); return; } K.offRefunds = K.offRefunds || {}; K.offRefunds[el.dataset.k] = { amt: Math.round(v * 100), note: (($('#off_note') || {}).value || '').trim(), by: K.prefs.owner, at: new Date().toISOString() }; await save('offRefunds'); invalidate(); toast('Saved. It comes off the profit of this month.'); orderDrawer(el.dataset.k.split('|')[2]); render(); },
+  offDel: async el => { delete K.offRefunds[el.dataset.k]; await save('offRefunds'); invalidate(); toast('Removed.'); orderDrawer(el.dataset.k.split('|')[2]); render(); }
+});
+const RTYPE_HELP = {
+  'Full refund': 'The buyer got everything back. eBay gave back its fees too. If the item came back, it can be sold again; if it was dropship, claim the money back from AliExpress.',
+  'Part refund': 'Only part of the money went back, usually agreed with the buyer. The rest stays as sales.',
+  'Cancelled before sending · full refund': 'Cancelled before it was sent (no tracking). If it was ordered from AliExpress, cancel there too and get the money back.',
+  'eBay claim · full': 'eBay decided a claim (item not received / not as described) and took the money back.',
+  'eBay claim · part': 'eBay took back part of the money in a claim.',
+  'Payment dispute (bank chargeback)': 'The buyer’s bank took the money back. Reply to eBay with proof of postage to win it back.',
+  'Refund of an earlier month’s order': 'A refund this month for an order sold in an earlier month. It is counted now, as eBay took the money now.',
+  'Refund paid outside eBay': 'You paid the buyer yourself (not through eBay). It comes off the profit.'
+};
+const rBase = t => (t || '').replace(/ · \d+(\.\d+)?%$/, '').replace(/ \+ paid outside eBay$/, '');
+function refundRows(L) { const R = []; L.forEach(({ a, m, A }) => (A.orders || []).forEach(o => { if (o.rtype) R.push({ a, m, o }); })); return R; }
+function refundTable(R, showAcct) {
+  const by = {}; R.forEach(x => { const k = rBase(x.o.rtype); const g = by[k] = by[k] || { n: 0, back: 0, off: 0 }; g.n++; g.back += x.o.back || 0; g.off += x.o.off || 0; });
+  return `<div class="grid">${Object.entries(by).map(([k, g]) => `<div class="card tile"><div class="k">${esc(k)} ${help(RTYPE_HELP[k] || '')}</div><div class="v">${g.n}</div><div class="note">${fmt(g.back + g.off)} back</div></div>`).join('') || '<div class="card note">No refunds.</div>'}</div>
+  <div class="card"><div class="tw"><table><thead><tr>${showAcct ? '<th>Account</th><th>Month</th>' : ''}<th>Order</th><th>What happened</th><th class="r">Sale</th><th class="r">Given back</th><th class="r">Outside eBay</th><th class="r">Cost</th><th class="r">Profit</th><th>VA status</th></tr></thead><tbody>${R.slice(0, 800).map(({ a, m, o }) => `<tr class="click" data-act="${showAcct ? 'rGo' : 'order'}" data-o="${esc(o.order)}" data-acct="${esc(a.id)}" data-month="${esc(m)}">${showAcct ? `<td>${esc(a.name)}</td><td>${ML(m)}</td>` : ''}<td class="num">${esc(o.order)}</td><td>${esc(o.rtype)}</td><td class="r">${money(o.gross)}</td><td class="r">${money(o.back || 0)}</td><td class="r">${o.off ? money(o.off) : ''}</td><td class="r">${o.cost != null ? money(o.cost) : '–'}</td><td class="r">${o.profit != null ? money(o.profit) : '–'}</td><td class="note">${esc(o.vaStatus || '')}</td></tr>`).join('') || '<tr><td colspan="10" class="note">No refunds.</td></tr>'}</tbody></table></div><p class="note">Tap an order to see its eBay lines, add a refund paid outside eBay, or see why its net is £0.00.</p></div>`;
+}
+T.refunds = (a, m, A) => refundTable(refundRows([{ a, m, A }]), false);
+V.refunds = () => `<h1>Refunds</h1><p class="sub">Every refund by kind: full, part, cancelled, eBay claim, bank chargeback, earlier month, and money paid outside eBay. Use the filters at the top for one account or month.</p>${refundTable(refundRows(allAudits()), true)}`;
+Object.assign(ACT, { rGo: el => { Object.assign(S, { acct: el.dataset.acct, month: el.dataset.month, tab: 'refunds', page: 0 }); go('audit'); setTimeout(() => orderDrawer(el.dataset.o), 50); } });
+
+// ====================== SKU profit (with ads) ======================
+function skuRows(A) {
+  const R = {}; const ordAds = A.orders.reduce((s, o) => s + (o.ads || 0), 0);
+  const acctAds = Math.max(0, (A.sums.ads || 0) - (A.sums.adsCredit || 0) - ordAds); const G = A.orders.reduce((s, o) => s + Math.max(0, o.gross), 0);
+  A.orders.forEach(o => {
+    const skus = String(o.sku || '').split(', ').filter(Boolean); if (!skus.length) skus.push(o.sold === false || !o.gross ? '(refunds of earlier months)' : '(no SKU)'); const f = 1 / skus.length;
+    skus.forEach(k => { const r = R[k] = R[k] || { sku: k, title: '', orders: 0, qty: 0, gross: 0, fees: 0, ads: 0, adsShare: 0, back: 0, net: 0, cost: 0, noCost: 0 };
+      r.orders += f; r.qty += (o.qty || 0) * f; r.gross += o.gross * f; r.fees += (o.fees || 0) * f; r.ads += (o.ads || 0) * f; r.back += ((o.back || 0) + (o.off || 0)) * f; r.net += (o.net - (o.off || 0)) * f;
+      if (o.cost != null) r.cost += o.cost * f; else if (o.gross > 0 && !o.refunded) r.noCost++; if (!r.title && o.title) r.title = o.title; r.adsShare += G ? acctAds * Math.max(0, o.gross) * f / G : 0; });
+  });
+  return Object.values(R).map(r => { const x = {}; Object.entries(r).forEach(([k, v]) => x[k] = typeof v === 'number' && !['orders', 'qty', 'noCost'].includes(k) ? Math.round(v) : v); x.orders = Math.round(r.orders * 10) / 10; x.qty = Math.round(r.qty * 10) / 10; x.profit = x.net - x.adsShare - x.cost; x.margin = x.gross ? Math.round(1000 * x.profit / x.gross) / 10 : 0; return x; });
+}
+function skuTable(R, profitTotal) {
+  R.sort((a, b) => a.profit - b.profit);
+  const T0 = R.reduce((s, r) => ({ gross: s.gross + r.gross, ads: s.ads + r.ads, share: s.share + r.adsShare, profit: s.profit + r.profit }), { gross: 0, ads: 0, share: 0, profit: 0 });
+  return `<div class="grid"><div class="card tile"><div class="k">SKUs</div><div class="v">${R.length}</div></div><div class="card tile"><div class="k">Ads on orders ${help('Promoted Listings fees that eBay put on a sold order.')}</div><div class="v">${fmt(T0.ads)}</div></div><div class="card tile"><div class="k">Ads not on an order ${help('Ad fees with no order (for example Promoted Listings Advanced, cost per click). They are shared over the SKUs by their sales.')}</div><div class="v">${fmt(T0.share)}</div></div><div class="card tile"><div class="k">Loss-making SKUs</div><div class="v">${R.filter(r => r.profit < 0).length}</div></div></div>
+  <div class="card"><div class="tw"><table><thead><tr><th>SKU</th><th>Item</th><th class="r">Orders</th><th class="r">Units</th><th class="r">Sales</th><th class="r">eBay fees</th><th class="r">Ads (order)</th><th class="r">Ads (shared)</th><th class="r">Refunds</th><th class="r">Cost</th><th class="r">Profit</th><th class="r">Margin</th></tr></thead><tbody>${R.slice(0, 1000).map(r => `<tr><td class="num">${esc(r.sku)}</td><td class="note">${esc(String(r.title).slice(0, 60))}</td><td class="r num">${r.orders}</td><td class="r num">${r.qty}</td><td class="r">${money(r.gross)}</td><td class="r">${money(-Math.abs(r.fees))}</td><td class="r">${money(-Math.abs(r.ads))}</td><td class="r">${money(-r.adsShare)}</td><td class="r">${money(-r.back)}</td><td class="r">${money(-r.cost)}${r.noCost ? ` <span class="pill p-warn" title="Orders with no cost">${r.noCost}</span>` : ''}</td><td class="r"><b>${money(r.profit)}</b></td><td class="r"><span class="pill p-${r.margin < 0 ? 'bad' : r.margin < 10 ? 'warn' : 'ok'}">${r.margin}%</span></td></tr>`).join('') || '<tr><td colspan="12" class="note">No orders.</td></tr>'}</tbody></table></div><p class="note">Profit = eBay net of the SKU’s orders − its share of the ads that are not on an order − cost. Worst first.</p>${profitTotal != null ? `<div class="calc"><span class="l">Profit of all SKUs</span>${money(T0.profit)}<span class="l">Account costs not on any order (shop subscription, insertion fees, other fees, labels without an order, supplier refunds, refunds outside eBay)</span>${money(profitTotal - T0.profit)}<span class="l tt">Profit of the month</span><span class="tt">${money(profitTotal)}</span></div>` : ''}</div>`;
+}
+T.skus = (a, m, A) => skuTable(skuRows(A), A.profit);
+V.skus = () => { const M = {}; allAudits().forEach(({ A }) => skuRows(A).forEach(r => { const x = M[r.sku] = M[r.sku] || Object.assign({}, r, { gross: 0, fees: 0, ads: 0, adsShare: 0, back: 0, net: 0, cost: 0, orders: 0, qty: 0, noCost: 0 }); ['gross', 'fees', 'ads', 'adsShare', 'back', 'net', 'cost', 'orders', 'qty', 'noCost'].forEach(k => x[k] += r[k]); })); let PT = 0; allAudits().forEach(({ A }) => PT += A.profit); const R = Object.values(M).map(x => Object.assign(x, { orders: Math.round(x.orders * 10) / 10, qty: Math.round(x.qty * 10) / 10, profit: x.net - x.adsShare - x.cost, margin: x.gross ? Math.round(1000 * (x.net - x.adsShare - x.cost) / x.gross) / 10 : 0 })); return `<h1>SKU profit</h1><p class="sub">Every SKU across the accounts and months in the filter: sales, eBay fees, ads (on the order and shared), refunds, cost and profit.</p>${skuTable(R, PT)}`; };
+
+// ====================== extra columns from the files ======================
+function extraFor(acct, m, order) {
+  const show = K.prefs.colShow || {}; const out = [];
+  activeParts().filter(p => p.acct === acct && (p.month === m || p.kind === 'va_sheet') && p.extra).forEach(p => Object.entries(p.extra).forEach(([c, map]) => { if (show[c] && map[order] !== undefined && !out.some(x => x[0] === c)) out.push([c, map[order]]); }));
+  return out;
+}
+
+// ====================== import review ======================
+const ASIDE_FIX = [
+  [/No order number/i, 'A summary or empty line, not an order. Nothing to do.'],
+  [/No type|No date/i, 'A line without a type or date, usually a total line at the end. Nothing to do.'],
+  [/New line type/i, 'eBay added a new kind of line. Its money is already in the totals. Tell Claude its name if it should be shown on its own.'],
+  [/cost/i, 'The row has no cost. Ask the VA to fill the cost, or add the stock cost list.'],
+  [/duplicate|twice|same/i, 'The same row is in the file twice. It is counted once.'],
+  [/.*/, 'Kept on one side so nothing is lost. If it should count, tell Claude what it is.']
+];
+const fixFor = r => (ASIDE_FIX.find(([re]) => re.test(r)) || [, ''])[1];
+const ERR_FIX = [[/needs_reauth|sign-in/i, 'Google sign-in ran out. Tap “Reconnect Google”.'], [/quota|storage|space/i, 'This device is out of space. Remove old files in Files, or use another device.'], [/network|fetch|Failed to fetch|offline/i, 'No internet at that moment. The tool tries again by itself.'], [/Could not open|read/i, 'The file could not be opened. Open it once on the computer and save it again, or send it to Claude.'], [/.*/, 'Press “Copy errors for Claude” and paste it in the chat.']];
+V.review = () => {
+  const F = FILES.filter(f => !f._hist).slice().sort((x, y) => String(y.added).localeCompare(String(x.added))).slice(0, 60);
+  const show = K.prefs.colShow || {}; const errs = (K.errors || []).slice(-15).reverse();
+  const card = f => {
+    const used = f.parts.filter(p => !p.notNeeded && p.kind !== 'unknown' && p.kind !== 'other_pic'), not = f.parts.filter(p => p.notNeeded || p.kind === 'unknown' || p.kind === 'other_pic');
+    const aside = f.parts.flatMap(p => p.aside || []); const byR = {}; aside.forEach(x => { (byR[x.reason] = byR[x.reason] || []).push(x); });
+    const cols = [...new Set(f.parts.flatMap(p => p.unusedCols || []))].filter(Boolean);
+    const extraCols = new Set(f.parts.flatMap(p => Object.keys(p.extra || {})));
+    const issues = f.parts.flatMap(p => (p.notes || []).filter(n => n.t === 'warn' || n.t === 'bad'));
+    const st = !used.length ? 'grey' : issues.length || Object.keys(byR).length ? 'warn' : 'ok';
+    return `<div class="card"><div class="row between"><div><h2 style="margin:0">${esc(f.name)}</h2><div class="note">${esc(f.path || 'added by hand')} · ${esc(String(f.added).slice(0, 10))}</div></div>${pill(st === 'ok' ? 'All used' : st === 'warn' ? 'Have a look' : 'Not needed', st)}</div>
+    <div class="list" style="margin-top:6px">${used.map(p => `<div class="li"><div class="ic i-ok">✓</div><div class="grow"><div class="t">Used: ${esc(KIND_LABEL[p.kind] || p.label || p.kind)}${p.sheet && p.sheet !== f.name ? ' · tab “' + esc(p.sheet) + '”' : ''}</div><div class="d">${p.acct && p.acct !== '*' && acctById(p.acct) ? esc(acctById(p.acct).name) : 'no account yet'}${p.month ? ' · ' + MLL(p.month) : ''}${p.count ? ' · ' + p.count + ' rows' : ''}${p.placedBy ? ' · placed by ' + esc(p.placedBy) : ''}</div></div></div>`).join('')}
+    ${not.map(p => `<div class="li"><div class="ic i-grey">·</div><div class="grow"><div class="t">Not used: ${esc(p.sheet || f.name)}</div><div class="d">${p.kind === 'other_pic' ? 'A picture that is not an audit page.' : 'Not a sales, fee, cost, stock or money table.'} Should it be used?</div></div><button class="btn sm" data-go="aside">Yes, show me how</button><button class="btn sm" data-act="rvOk" data-id="${f.id}">No, leave it</button></div>`).join('')}
+    ${issues.map(n => `<div class="li"><div class="ic i-${n.t}">!</div><div class="grow">${esc(n.m)}</div>${n.issue ? `<div class="note">${esc((AD.ISSUES[n.issue] || {}).next || '')}</div>` : ''}</div>`).join('')}
+    ${Object.entries(byR).map(([r, L]) => `<div class="li"><div class="ic i-warn">!</div><div class="grow"><div class="t">${L.length} row${L.length > 1 ? 's' : ''} kept aside: ${esc(r)}</div><div class="d">${esc(fixFor(r))}${L[0] && L[0].values ? ' · e.g. row ' + L[0].row + ': ' + esc(L[0].values.filter(v => String(v).trim()).slice(0, 4).join(' | ')) : ''}</div></div>${f.asideOk && f.asideOk[r] ? pill('Checked', 'ok') : `<button class="btn sm" data-act="rvAside" data-id="${f.id}" data-r="${esc(r)}">That is fine</button>`}</div>`).join('')}
+    ${cols.length ? `<div class="li" style="flex-wrap:wrap"><div class="ic i-grey">?</div><div class="grow" style="min-width:220px"><div class="t">${cols.length} column${cols.length > 1 ? 's' : ''} the audit does not need</div><div class="d">Tap one to show it on every order (in the order window). Tap again to hide.</div><div class="chips" style="margin-top:6px">${cols.slice(0, 40).map(c => extraCols.has(c) ? `<button class="chip ${show[c] ? 'on' : ''}" data-act="rvCol" data-c="${esc(c)}">${esc(c)}</button>` : `<span class="chip" title="Kept in the original file">${esc(c)}</span>`).join('')}</div></div></div>` : ''}</div></div>`;
+  };
+  return `<h1>Import review</h1><p class="sub">What the tool took from every file, what it did not use, and a one-tap answer for each. Nothing is lost: what is not used stays in the original file.</p>
+  ${errs.length ? `<div class="card"><div class="row between"><h2>Problems the tool met (${errs.length})</h2><button class="btn sm" data-act="copyErr">Copy errors for Claude</button></div><div class="list">${errs.map(e => { const t = String(e.msg || e.m || e.what || e.message || JSON.stringify(e)).slice(0, 200); return `<div class="li"><div class="ic i-warn">!</div><div class="grow"><div class="t">${esc(t)}</div><div class="d">What to do: ${esc((ERR_FIX.find(([re]) => re.test(t)) || [, ''])[1])}</div></div></div>`; }).join('')}</div></div>` : ''}
+  ${F.map(card).join('') || '<div class="card note">No files yet.</div>'}`;
+};
+Object.assign(ACT, {
+  rvCol: async el => { K.prefs.colShow = K.prefs.colShow || {}; const c = el.dataset.c; K.prefs.colShow[c] = !K.prefs.colShow[c]; await save('prefs'); toast(K.prefs.colShow[c] ? `“${c}” now shows on every order.` : `“${c}” is hidden again.`); render(); },
+  rvAside: async el => { const f = FILES.find(x => x.id === el.dataset.id); if (!f) return; f.asideOk = f.asideOk || {}; f.asideOk[el.dataset.r] = true; await DB.put('files', f.id, f); render(); },
+  rvOk: async el => { const f = FILES.find(x => x.id === el.dataset.id); if (!f) return; f.parts.forEach(p => { if (p.notNeeded || p.kind === 'unknown') p.checked = true; }); await DB.put('files', f.id, f); toast('Left as not needed.'); render(); }
+});
+
+// ====================== menu: every module and its parts ======================
+(function menu() {
+  const g = k => GROUPS.find(x => x[0] === k)[3];
+  g('g_audit').splice(2, 0, ['refunds', 'Refunds']);
+  g('g_files').push(['review', 'Import review']);
+  g('g_money').splice(2, 0, ['skus', 'SKU profit']);
+  Object.assign(VIEW_NAME, { refunds: 'Refunds', review: 'Import review', skus: 'SKU profit' });
+  Object.assign(GO_HELP, { refunds: 'Refunds: every refund by kind, and money paid outside eBay.', review: 'Import review: what was used from every file and what was not, with a one-tap answer.', skus: 'SKU profit: sales, fees, ads, refunds, cost and profit per SKU.' });
+  Object.assign(HELPT, { offSave: 'Saves money you paid the buyer outside eBay; it comes off the profit.', offDel: 'Removes this outside-eBay refund.', rGo: 'Opens this order in its audit.', rvCol: 'Shows or hides this column on every order.', rvAside: 'Says these rows are fine to leave aside.', rvOk: 'Leaves this file as not needed.', lockNow: 'Locks the tool now. Unlock with fingerprint, face or password.', lkSet: 'Saves the password and turns the lock on.', lkBio: 'Adds fingerprint or face unlock on this device.', lkOff: 'Turns the lock off on this device.', word: 'Downloads the audit as a Word file with your logo.' });
+})();
+
+// ====================== app lock: fingerprint / face / password, never blocks ======================
+const LK = { cfg: null, wrong: 0, until: 0, last: Date.now() };
+try { LK.cfg = JSON.parse(localStorage.getItem('ad-lock') || 'null'); } catch (e) { }
+const lkSave = () => { try { localStorage.setItem('ad-lock', JSON.stringify(LK.cfg)); } catch (e) { } };
+const rnd = n => crypto.getRandomValues(new Uint8Array(n));
+const b64u = u => btoa(String.fromCharCode(...new Uint8Array(u))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+async function pwHash(pw, salt) { const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']); const b = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: unb64u(salt), iterations: 150000, hash: 'SHA-256' }, k, 256); return b64u(b); }
+const lockOn = () => !!(LK.cfg && LK.cfg.on && LK.cfg.pw);
+function showLock() {
+  if (!lockOn() || $('#lockscr')) return; document.documentElement.classList.add('locked'); closeHelpPop && closeHelpPop();
+  const d = document.createElement('div'); d.id = 'lockscr'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', 'Audit Desk is locked');
+  d.innerHTML = `<div class="lkbox"><div class="lklogo">${LOGO_SVG}</div><h1>Audit Desk</h1><p class="note">Locked on this device</p>
+  ${LK.cfg.cred ? '<button class="btn pri lkbig" id="lkBioBtn">Unlock with fingerprint / face</button>' : ''}
+  <form id="lkForm" autocomplete="off"><input class="in" type="password" id="lkPw" placeholder="Password" autocomplete="current-password" aria-label="Password"><button class="btn ${LK.cfg.cred ? '' : 'pri'}" type="submit">Unlock</button></form><div id="lkMsg" class="note" role="status"></div>
+  ${typeof IS_WEB !== 'undefined' && IS_WEB ? '<button class="btn sm" id="lkG">Forgot it? Unlock with Google (aemporio6)</button>' : ''}</div>`;
+  document.body.appendChild(d);
+  const msg = t => { const m = $('#lkMsg'); if (m) m.textContent = t; };
+  $('#lkForm').onsubmit = async ev => { ev.preventDefault(); const w = LK.until - Date.now(); if (w > 0) { msg(`Wait ${Math.ceil(w / 1000)} seconds, then try again.`); return; } const pw = $('#lkPw').value; if (!pw) return; if (await pwHash(pw, LK.cfg.salt) === LK.cfg.pw) return unlock(); LK.wrong++; LK.until = LK.wrong >= 3 ? Date.now() + Math.min(10, LK.wrong - 2) * 1000 : 0; $('#lkPw').value = ''; msg(LK.wrong >= 3 ? `Not right. Try again in ${Math.min(10, LK.wrong - 2)} seconds, or use Google below. Nothing is ever blocked.` : 'Not right. Try again.'); };
+  if ($('#lkBioBtn')) { $('#lkBioBtn').onclick = bioUnlock; setTimeout(() => { if (document.visibilityState === 'visible') bioUnlock(); }, 400); }
+  if ($('#lkG')) $('#lkG').onclick = async () => { msg('Opening Google…'); const ok = await gwSignIn(); if (ok && GW.email && (/^aemporio6@gmail\.com$/i.test(GW.email) || GW.email === LK.cfg.email)) { unlock(); toast('Unlocked with Google. You can set a new password in Settings.'); } else msg('That Google account is not the owner of this tool.'); };
+  setTimeout(() => { const p = $('#lkPw'); if (p && !LK.cfg.cred) p.focus(); }, 100);
+}
+async function bioUnlock() {
+  try { const r = await navigator.credentials.get({ publicKey: { challenge: rnd(32), allowCredentials: [{ type: 'public-key', id: unb64u(LK.cfg.cred) }], userVerification: 'required', timeout: 60000 } }); if (r) unlock(); }
+  catch (e) { const m = $('#lkMsg'); if (m) m.textContent = 'Fingerprint / face did not work this time. Use the password, or try again.'; }
+}
+function unlock() { LK.wrong = 0; LK.until = 0; LK.last = Date.now(); const d = $('#lockscr'); if (d) d.remove(); document.documentElement.classList.remove('locked'); }
+['pointerdown', 'keydown', 'scroll', 'touchstart'].forEach(n => document.addEventListener(n, () => { if (!$('#lockscr')) LK.last = Date.now(); }, { passive: true, capture: true }));
+setInterval(() => { if (lockOn() && LK.cfg.idle && Date.now() - LK.last > LK.cfg.idle * 60000) showLock(); }, 20000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) LK.hid = Date.now(); else if (lockOn() && LK.cfg.idle && LK.hid && Date.now() - LK.hid > LK.cfg.idle * 60000) showLock(); });
+if (lockOn()) showLock();
+function lockCard() {
+  const c = LK.cfg || {}; const bio = !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
+  return `<div class="card"><h2>Lock this device ${help('A lock screen on this phone or computer. Your data itself is behind your Google sign-in; this stops someone who picks up your phone. A wrong password never blocks you: after a few tries there is a short wait, and Google sign-in (aemporio6) always opens it.')}</h2>
+  <p class="note">${lockOn() ? `On · ${c.cred ? 'fingerprint / face and password' : 'password'} · locks after ${c.idle ? c.idle + ' minutes' : 'never (only when you press Lock)'} without use.` : 'Off on this device.'}</p>
+  <div class="form"><label>${lockOn() ? 'New password (optional)' : 'Password'}<input class="in" type="password" id="lkP1" autocomplete="new-password" placeholder="At least 6 characters"></label><label>Password again<input class="in" type="password" id="lkP2" autocomplete="new-password"></label><label>Lock after${dd('lkIdle', null, String(c.idle ?? 10), [{ v: '5', l: '5 minutes' }, { v: '10', l: '10 minutes' }, { v: '15', l: '15 minutes' }, { v: '30', l: '30 minutes' }, { v: '60', l: '1 hour' }, { v: '0', l: 'Only when I press Lock' }])}</label></div>
+  <div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn pri" data-act="lkSet">${lockOn() ? 'Save' : 'Turn the lock on'}</button>${lockOn() && bio ? `<button class="btn" data-act="lkBio">${c.cred ? 'Set up fingerprint / face again' : 'Add fingerprint / face'}</button>` : ''}${lockOn() ? '<button class="btn" data-act="lockNow">Lock now</button><button class="btn" data-act="lkOff">Turn off</button>' : ''}</div></div>`;
+}
+Object.assign(ACT, {
+  lkSet: async () => {
+    const p1 = $('#lkP1').value, p2 = $('#lkP2').value, idle = +$('#lkIdle').value;
+    if (!lockOn() || p1) { if (p1.length < 6) { toast('The password needs at least 6 characters.'); return; } if (p1 !== p2) { toast('The two passwords are not the same.'); return; } const salt = b64u(rnd(16)); LK.cfg = Object.assign({}, LK.cfg || {}, { on: true, salt, pw: await pwHash(p1, salt) }); }
+    LK.cfg.idle = idle; LK.cfg.email = (typeof GW !== 'undefined' && GW.email) || LK.cfg.email || ''; lkSave(); toast('Lock saved on this device.'); render();
+    if (window.PublicKeyCredential && !LK.cfg.cred) setTimeout(() => ACT.lkBio(), 300);
+  },
+  lkBio: async () => {
+    try { const c = await navigator.credentials.create({ publicKey: { challenge: rnd(32), rp: { name: 'Audit Desk' }, user: { id: rnd(16), name: (GW && GW.email) || 'owner', displayName: 'Audit Desk' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' }, timeout: 60000 } }); if (c) { LK.cfg.cred = b64u(c.rawId); lkSave(); toast('Fingerprint / face added on this device.'); render(); } }
+    catch (e) { toast('This device did not add fingerprint / face. The password still works.'); }
+  },
+  lkOff: () => { LK.cfg = null; lkSave(); toast('Lock turned off on this device.'); render(); },
+  lockNow: () => { if (!lockOn()) { toast('Set a password first: Settings → Lock this device.'); go('settings'); return; } showLock(); }
+});
+const _vset = V.settings; V.settings = () => lockCard() + _vset();
+const _shell2 = shell;
+shell = function () { _shell2(); try { const tr = $('#top .toprow'); if (tr && lockOn() && !$('#lockBtn')) tr.insertAdjacentHTML('beforeend', '<button class="btn sm" id="lockBtn" data-act="lockNow" aria-label="Lock now" title="Lock now">🔒</button>'); } catch (e) { } };
+
+// ====================== the logo on every download ======================
+let LOGO_PNG = '';
+(function () { try { const img = new Image(); img.onload = () => { const c = document.createElement('canvas'); c.width = c.height = 256; c.getContext('2d').drawImage(img, 0, 0, 256, 256); LOGO_PNG = c.toDataURL('image/png'); }; img.src = LOGO_URI; } catch (e) { } })();
+const stamp = () => `Downloaded by ${K.prefs.owner || 'Owner'} on ${new Date().toLocaleString('en-GB')} · Audit Desk · Confidential`;
+// Excel: a heading line with the name, date and logo mark on every sheet
+const _workbook = workbook;
+workbook = function (a, m, A) {
+  const wb = _workbook(a, m, A); const X = XLSX.utils;
+  wb.SheetNames.forEach(n => { const ws = wb.Sheets[n]; const rows = X.sheet_to_json(ws, { header: 1, raw: true, defval: '' }); const top = [['✓ AUDIT DESK  ·  ' + a.name + '  ·  ' + MLL(m)], [stamp()], []]; const ns = X.aoa_to_sheet(top.concat(rows)); if (ws['!cols']) ns['!cols'] = ws['!cols']; wb.Sheets[n] = ns; });
+  wb.Props = Object.assign(wb.Props || {}, { Title: `${a.name} ${MLL(m)} audit`, Author: K.prefs.owner || 'Audit Desk', Company: 'Audit Desk', Comments: stamp() });
+  return wb;
+};
+// PDF / Print: logo heading, watermark on every page, who and when
+const _print = ACT.print;
+ACT.print = () => { const h = document.createElement('div'); h.className = 'printhead'; h.innerHTML = `<span class="lg">${LOGO_SVG}</span><div><b>Audit Desk</b>${S.view === 'audit' && acctById(S.acct) ? ' · ' + esc(acctById(S.acct).name) + ' · ' + MLL(S.month) : ''}<div class="note">${esc(stamp())}</div></div>`; const f = document.createElement('div'); f.className = 'printfoot'; f.textContent = stamp(); const done = () => { h.remove(); f.remove(); window.removeEventListener('afterprint', done); }; window.addEventListener('afterprint', done); setTimeout(() => { const v = $('#view'); if (v) { v.prepend(h); v.append(f); } }, 30); _print(); setTimeout(done, 60000); };
+// Word: the audit summary with logo, watermark and stamp
+ACT.word = () => {
+  const a = acctById(S.acct), m = S.month, A = getAudit(S.acct, m); if (!a || !A || !A.sums) { toast('Open an audit first.'); return; }
+  const z = k => A.sums[k] || 0, c = splitCalc(a, A.profit, K.locks[a.id + '|' + m], m), sc = typeof auditScore === 'function' ? auditScore(a, m, A) : null;
+  const row = (l, v, b) => `<tr><td style="padding:4px 8px;border-bottom:1px solid #ddd">${b ? '<b>' + esc(l) + '</b>' : esc(l)}</td><td style="padding:4px 8px;border-bottom:1px solid #ddd;text-align:right">${b ? '<b>' + fmt(v) + '</b>' : fmt(v)}</td></tr>`;
+  const iss = issuesAll().filter(i => i.acctId === a.id && i.month === m && isOpen(i));
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><title>${esc(a.name)} ${MLL(m)}</title><style>body{font-family:Calibri,Arial;font-size:11pt;color:#14202e}h1{color:#173f78;font-size:20pt;margin:0}h2{color:#173f78;font-size:13pt;margin-top:18pt}.wm{position:absolute;left:120pt;top:260pt;z-index:-1;opacity:.08}</style></head><body>
+  ${LOGO_PNG ? `<img class="wm" src="${LOGO_PNG}" width="320" height="320" style="position:absolute;left:120pt;top:260pt;z-index:-1;opacity:.08">` : ''}
+  <table style="width:100%"><tr><td style="width:60px">${LOGO_PNG ? `<img src="${LOGO_PNG}" width="54" height="54">` : ''}</td><td><h1>Audit Desk</h1><div>${esc(a.name)} · ${esc(a.seller || '')} · ${MLL(m)}</div><div style="color:#5b6877;font-size:9pt">${esc(stamp())}</div></td></tr></table>
+  ${sc ? `<h2>Audit score: ${sc.pct}%</h2><ul>${sc.C.map(x => `<li>${x.got >= 0.999 ? '✓' : '!'} ${esc(x.t)}</li>`).join('')}</ul>` : ''}
+  <h2>Summary</h2><table style="border-collapse:collapse;width:100%">${row('Sales (gross)', z('gross'))}${row('eBay net', z('net'))}${row('Cost of goods', -A.cogs)}${A.supplierRefunds ? row('AliExpress refunds received', A.supplierRefunds) : ''}${A.offRefund ? row('Refunds paid outside eBay', -A.offRefund) : ''}${row('Profit', A.profit, true)}${c.exp ? row('Expenses', -c.exp) : ''}${c.rows.map(r => row(splitLabel(r), -r.amt)).join('')}${c.rows.length || c.exp ? row('Left for you', c.left, true) : ''}</table>
+  <h2>Checks</h2><ul><li>eBay maths: ${A.netFail ? A.netFail + ' lines do not add up' : 'all lines add up'}</li><li>Cash difference: ${fmt(A.cash.diff)}</li><li>Orders: ${z('orders')} · units ${z('units')} · held by eBay ${fmt(A.cash.held)}</li></ul>
+  <h2>Open issues (${iss.length})</h2>${iss.length ? `<ul>${iss.slice(0, 40).map(i => `<li><b>${esc(i.kind)}</b> · ${esc(i.ref || '')}${i.amt ? ' · ' + fmt(i.amt) : ''}</li>`).join('')}</ul>` : '<p>None.</p>'}
+  <p style="color:#5b6877;font-size:9pt;margin-top:24pt">${esc(stamp())}</p></body></html>`;
+  saveFile(`${a.name} ${m} Audit.doc`, new Blob(['﻿' + html], { type: 'application/msword' }));
+};
 </script>
 </body></html>
