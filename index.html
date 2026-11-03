@@ -160,6 +160,8 @@ html.helpon #helpBtn{box-shadow:0 0 0 3px var(--warn-soft)}
 #view,.top{position:relative;z-index:2}
 .card{position:relative}
 html.phone .nextbar .grow{flex:1 1 calc(100% - 44px)}html.phone .nextbar>.row{flex-basis:100%;justify-content:flex-end}
+.score.s-ok{border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}.score.s-warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}.score.s-bad{border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
+.score.s-ok .bar i{background:var(--ok)}.score.s-warn .bar i{background:var(--warn)}.score.s-bad .bar i{background:var(--bad)}
 
 html.phone .app{grid-template-columns:1fr}
 html.phone .rail{display:none}
@@ -862,7 +864,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '1.8.0';
+const APPV = '1.9.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -1063,20 +1065,26 @@ function splitRows(a, lock) {
   if (Array.isArray(a.split)) return a.split;
   const v = a.vaPct; return v === '' || v == null || isNaN(+v) || !+v ? [] : [{ role: 'VA', who: [a.va || 'VA'], how: 'pct', v: +v }];
 }
-function splitCalc(a, profit, lock) {
-  const rows = splitRows(a, lock); let left = profit; const out = [];
+// expenses of an account for a month: one-off entries of that month + monthly ones that run in that month
+function expList(acctId, m) { return (K.expenses || []).filter(e => e.acct === acctId && (e.month === m || (e.every && (e.from || '0000') <= m && (!e.to || e.to >= m)))); }
+function expFor(acctId, m, lock) { if (lock && lock.expenses != null) return lock.expenses; return expList(acctId, m).reduce((s, e) => s + (+e.amt || 0), 0); }
+function splitCalc(a, profit, lock, m) {
+  const exp = m && a && a.id ? expFor(a.id, m, lock) : 0; const before = (K.prefs.splitBase || 'after') === 'before';
+  const base = profit - exp;
+  const rows = splitRows(a, lock); let left = before ? profit : base; const pr = left; const out = [];
   rows.forEach(r => {
     const v = +r.v || 0; let amt = 0;
     if (r.how === 'fixed') amt = Math.round(v * 100);
-    else if (profit > 0) amt = Math.round((r.how === 'left' ? Math.max(0, left) : profit) * v / 100);
+    else if (pr > 0) amt = Math.round((r.how === 'left' ? Math.max(0, left) : pr) * v / 100);
     left -= amt; const who = (r.who && r.who.length ? r.who : [r.role || 'Someone']);
     out.push({ role: r.role || '', who, how: r.how, v, amt, each: who.map((w, i) => ({ who: w, amt: Math.floor(amt / who.length) + (i < amt % who.length ? 1 : 0) })) });
   });
-  return { rows: out, total: profit - left, left };
+  const total = out.reduce((s, r) => s + r.amt, 0);
+  return { rows: out, total, exp, base, left: base - total };
 }
 const splitLabel = r => `${r.role}${r.who && r.who.length ? ' (' + r.who.join(', ') + ')' : ''} ${r.how === 'fixed' ? '£' + r.v + ' a month' : r.v + '%' + (r.how === 'left' ? ' of what is left' : '')}`;
 function vaPct(a) { return splitRows(a).length ? 1 : 0; }
-function vaShareOf(a, profit, lock) { return splitCalc(a, profit, lock).total; }
+function vaShareOf(a, profit, lock, m) { return splitCalc(a, profit, lock, m).total; }
 function latestMonth(acctId) { const m = FILES.flatMap(f => f.parts).filter(q => q.acct === acctId && q.kind === 'ebay_txn').map(q => q.month).sort(); return m[m.length - 1] || null; }
 // re-place files that were waiting for their account (runs after every new file)
 // tabs of the same workbook belong to the same account
@@ -1510,7 +1518,7 @@ V.home = () => {
    <div class="bar" style="margin:10px 0"><i style="width:${Math.round(100 * done / g.S.length)}%"></i></div>
    ${g.next ? `<div class="li" style="border:0;padding:0"><div class="ic i-warn">→</div><div class="grow"><div class="t">Next: ${esc(g.next.t)}</div><div class="d">${esc(g.next.how[0])}</div></div></div><div class="row" style="margin-top:8px">${g.next.kind ? (typeof DRV !== 'undefined' && DRV.mcp ? `<span class="pill p-acc">⟳ watching Drive for it</span>` : `<button class="btn sm" data-act="pick" data-acct="${a.id}" data-month="${m}">Add by hand</button>`) : ''}<button class="btn sm" data-act="goAudit" data-acct="${a.id}" data-month="${m}">Open audit</button></div>` : `<div class="check">✓ ${MLL(m)} is complete</div>`}
    ${older.length ? `<div class="note" style="margin-top:8px">Also not locked yet: ${older.map(x => `<button class="btn sm" data-act="goAudit" data-acct="${a.id}" data-month="${x}">${ML(x)}</button>`).join(' ')}</div>` : ''}
-   ${g.A && g.A.sums ? `<div class="calc" style="margin-top:10px"><span class="l">eBay net</span>${money(g.A.sums.net)}<span class="l">Profit</span>${g.A.nCostMissing ? `<span class="num">${fmt(g.A.profit)} <small class="note">(${g.A.nCostMissing} costs missing)</small></span>` : money(g.A.profit)}${splitCalcLines(g.a, g.A.profit, K.locks[g.a.id + '|' + m])}</div>` : ''}
+   ${g.A && g.A.sums ? `<div class="calc" style="margin-top:10px"><span class="l">eBay net</span>${money(g.A.sums.net)}<span class="l">Profit</span>${g.A.nCostMissing ? `<span class="num">${fmt(g.A.profit)} <small class="note">(${g.A.nCostMissing} costs missing)</small></span>` : money(g.A.profit)}${(() => { const sc = typeof auditScore === 'function' && auditScore(g.a, m, g.A); return sc ? `<span class="l">Audit score</span><span class="pill p-${sc.cls}">${sc.pct}%</span>` : ''; })()}${splitCalcLines(g.a, g.A.profit, K.locks[g.a.id + '|' + m], m)}</div>` : ''}
   </div>`).join('')}</div>
   ${iss.length ? `<div class="card"><div class="row between"><h2>Most important open issues</h2><button class="btn sm" data-go="issues">All ${iss.length}</button></div><div class="list">${groupIssues(iss).slice(0, 8).map(g => `<div class="li"><div class="ic i-${g.sev}">${ic(g.sev)}</div><div class="grow"><div class="t">${esc(g.acct)} · ${esc(g.label)} · ${esc(g.kind)}${g.n > 1 ? ` (${g.n})` : ''}</div><div class="d">${esc(g.next)}</div></div>${g.amt ? money(g.amt) : ''}</div>`).join('')}</div></div>` : ''}`;
 };
@@ -1580,7 +1588,7 @@ T.summary = (a, m, A) => {
   const checks = [[A.netFail === 0, `eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}`], [Math.abs(A.cash.diff) <= 1, `Cash balances: difference ${fmt(A.cash.diff)}`], [Math.abs(A.plCheck) <= 50, `Profit & loss ties to eBay net${A.plCheck ? ` (${fmt(A.plCheck)} currency rounding)` : ''}`], [!A.orMatch || A.orMatch.pct === 100, A.orMatch ? `Orders report matches ${A.orMatch.pct}% (${A.orMatch.inOr} orders)` : 'Orders report not uploaded yet'], [!A.nCostMissing, A.nCostMissing ? `${A.nCostMissing} orders have no cost yet` : `Cost found for all ${A.costKnown} orders`]];
   if (A.payMatch) checks.push([A.payMatch.found === A.payMatch.total, `Payouts found in bank: ${A.payMatch.found} of ${A.payMatch.total}`]);
   if (A.aeMatch) checks.push([A.aeMatch.hit === A.aeMatch.tried, `AliExpress costs found on card / bank: ${A.aeMatch.hit} of ${A.aeMatch.tried}`]);
-  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month, plus AliExpress refunds that reached the card / bank this month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m])}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
+  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month, plus AliExpress refunds that reached the card / bank this month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m], m)}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
   ${A.nCostMissing ? `<div class="check w">Profit is not final: ${A.nCostMissing} orders have no cost. <button class="btn sm" data-act="ofl" data-v="No cost found">Show them</button></div>` : ''}
   <div class="card"><h2>Checks</h2><div class="list">${checks.map(([ok, t]) => `<div class="li"><div class="ic i-${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'}</div><div class="grow">${esc(t)}</div></div>`).join('')}</div></div>`;
 };
@@ -1657,12 +1665,12 @@ function allAudits() { const L = []; K.acc.filter(accPass).forEach(a => auditMon
 V.held = () => { const L = allAudits().filter(x => x.A.cash.held); const tot = L.reduce((s, x) => s + x.A.cash.held, 0); return `<h1>Held money</h1><p class="sub">Money eBay kept back at the time the report was downloaded. Download that month’s report again after delivery to see it paid.</p><div class="grid"><div class="card tile"><div class="k">Total held</div><div class="v">${fmt(tot)}</div></div></div><div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">Orders</th><th class="r">Held</th><th></th></tr></thead><tbody>${L.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r num">${Object.keys(x.A.cash.heldOrders).length}</td><td class="r">${money(x.A.cash.held)}</td><td><button class="btn sm" data-act="pick" data-acct="${x.a.id}" data-month="${x.m}">Upload newer report</button></td></tr>`).join('') || '<tr><td colspan="5" class="note">Nothing held. ✓</td></tr>'}</tbody></table></div></div>`; };
 V.health = () => { const L = allAudits(); return `<h1>Account health</h1><p class="sub">Warning signs per month. Red means act now.</p><div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">Held %</th><th class="r">Refund rate</th><th class="r">Ads % of sales</th><th class="r">INAD fee</th><th class="r">Below Standard fee</th></tr></thead><tbody>${L.map(({ a, m, A }) => { const h = A.health; const c = (v, w, b) => v >= b ? 'p-bad' : v >= w ? 'p-warn' : 'p-ok'; return `<tr><td>${esc(a.name)}</td><td>${MLL(m)}</td><td class="r"><span class="pill ${c(h.heldPct, 10, 30)}">${h.heldPct}%</span></td><td class="r"><span class="pill ${c(h.refundRate, 5, 10)}">${h.refundRate}%</span></td><td class="r"><span class="pill ${c(h.adsPct, 8, 15)}">${h.adsPct}%</span></td><td class="r">${h.inad ? `<span class="pill p-bad">${fmt(h.inad)}</span>` : pill('none', 'ok')}</td><td class="r">${h.below ? `<span class="pill p-bad">${fmt(h.below)}</span>` : pill('none', 'ok')}</td></tr>`; }).join('') || '<tr><td colspan="7" class="note">No audits yet.</td></tr>'}</tbody></table></div></div>`; };
 V.trend = () => {
-  const L = allAudits(); const byM = {}; const VAx = {}; const vaAdd = (a, m, profit, lock) => { const c = splitCalc(a, profit, lock); byM[m].va += c.total; c.rows.forEach(r => r.each.forEach(e => { const key = e.who + '|' + r.role + '|' + m, x = VAx[key] = VAx[key] || { who: e.who, role: r.role, m, accts: [], profit: 0, share: 0 }; x.accts.push(`${a.name} ${r.how === 'fixed' ? '£' + r.v : r.v + '%'}`); x.profit += profit; x.share += e.amt; })); };
+  const L = allAudits(); const byM = {}; const VAx = {}; const vaAdd = (a, m, profit, lock) => { const c = splitCalc(a, profit, lock, m); byM[m].va += c.total + c.exp; c.rows.forEach(r => r.each.forEach(e => { const key = e.who + '|' + r.role + '|' + m, x = VAx[key] = VAx[key] || { who: e.who, role: r.role, m, accts: [], profit: 0, share: 0 }; x.accts.push(`${a.name} ${r.how === 'fixed' ? '£' + r.v : r.v + '%'}`); x.profit += profit; x.share += e.amt; })); };
   L.forEach(({ a, m, A }) => { const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0, va: 0 }; x.net += A.sums.net; x.cogs += A.cogs; x.profit += A.profit; x.gross += A.sums.gross; vaAdd(a, m, A.profit, K.locks[a.id + '|' + m]); });
   Object.entries(K.history).forEach(([k, h]) => { const m = k.split('|')[1]; const ha = acctById(k.split('|')[0]); if (!ha || !accPass(ha) || !monthPass(m)) return; const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0, va: 0 }; if (!L.some(l => l.m === m && l.a.id === k.split('|')[0])) { x.net += h.net; x.cogs += h.cogs; x.profit += h.profit; x.gross += h.gross; vaAdd(ha, m, h.profit, h); } });
   const ms = Object.keys(byM).sort(); const max = Math.max(1, ...ms.map(m => Math.max(byM[m].gross, byM[m].net)));
   return `<h1>Trend</h1><p class="sub">Accounts in the filter, month by month.</p><div class="card"><div class="tbars">${ms.map(m => { const x = byM[m]; return `<div class="tb"><div class="tbc"><i style="height:${Math.max(2, 100 * x.gross / max)}%;background:var(--line)" title="Sales ${fmt(x.gross)}"></i><i style="height:${Math.max(2, 100 * x.net / max)}%;background:var(--accent)" title="eBay net ${fmt(x.net)}"></i><i style="height:${Math.max(2, 100 * Math.max(0, x.profit) / max)}%;background:var(--ok)" title="Profit ${fmt(x.profit)}"></i></div><div class="note">${ML(m)}</div></div>`; }).join('') || '<p class="note">No audits yet.</p>'}</div><div class="row note"><span><i class="lg" style="background:var(--line)"></i>Sales</span><span><i class="lg" style="background:var(--accent)"></i>eBay net</span><span><i class="lg" style="background:var(--ok)"></i>Profit</span></div></div>
-  <div class="card"><div class="tw"><table><thead><tr><th>Month</th><th class="r">Sales</th><th class="r">eBay net</th><th class="r">Cost of goods</th><th class="r">Profit</th><th class="r">Shares</th><th class="r">Left for you</th></tr></thead><tbody>${ms.map(m => `<tr><td>${MLL(m)}</td><td class="r">${money(byM[m].gross)}</td><td class="r">${money(byM[m].net)}</td><td class="r">${money(byM[m].cogs)}</td><td class="r">${money(byM[m].profit)}</td><td class="r">${money(-byM[m].va)}</td><td class="r">${money(byM[m].profit - byM[m].va)}</td></tr>`).join('')}</tbody></table></div></div>
+  <div class="card"><div class="tw"><table><thead><tr><th>Month</th><th class="r">Sales</th><th class="r">eBay net</th><th class="r">Cost of goods</th><th class="r">Profit</th><th class="r">Expenses + shares</th><th class="r">Left for you</th></tr></thead><tbody>${ms.map(m => `<tr><td>${MLL(m)}</td><td class="r">${money(byM[m].gross)}</td><td class="r">${money(byM[m].net)}</td><td class="r">${money(byM[m].cogs)}</td><td class="r">${money(byM[m].profit)}</td><td class="r">${money(-byM[m].va)}</td><td class="r">${money(byM[m].profit - byM[m].va)}</td></tr>`).join('')}</tbody></table></div></div>
   <div class="card"><h2>Shares by person ${help('Each account has its split: Owner, VA, Investor, Handler (Accounts → Edit → Profit split). % rows give nothing in a month with a loss; a fixed amount such as rent is paid every month.')}</h2>${Object.keys(VAx).length ? `<div class="tw"><table><thead><tr><th>Person</th><th>Role</th><th>Month</th><th>Accounts</th><th class="r">Profit of those accounts</th><th class="r">Share</th></tr></thead><tbody>${Object.values(VAx).sort((x, y) => y.m.localeCompare(x.m) || x.who.localeCompare(y.who)).map(r => `<tr><td>${esc(r.who)}</td><td>${esc(r.role)}</td><td>${MLL(r.m)}</td><td class="note">${esc(r.accts.join(', '))}</td><td class="r">${money(r.profit)}</td><td class="r"><b>${money(r.share)}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="note">No split set yet. Set it once per account: Accounts → Edit → “Profit split”.</p>'}</div>`;
 };
 
@@ -1681,7 +1689,7 @@ V.stock = () => {
 V.history = () => {
   const H = Object.entries(K.history).map(([k, h]) => ({ k, a: acctById(k.split('|')[0]), m: k.split('|')[1], h })).filter(x => x.a && accPass(x.a) && monthPass(x.m)).sort((x, y) => y.m.localeCompare(x.m));
   return `<h1>History</h1><p class="sub">Only this month and last month stay in the main screens, so the tool stays fast. Older locked months move here automatically on the 1st${FS.root ? ', and their files move to the “Audits Archive” folder' : ''}.</p>
-  <div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">eBay net</th><th class="r">Profit</th><th class="r">Shares</th><th class="r">Left for you</th><th>Locked</th><th>Files</th><th></th></tr></thead><tbody>${H.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r">${money(x.h.net)}</td><td class="r">${money(x.h.profit)}</td><td class="r">${money(-vaShareOf(x.a, x.h.profit, x.h))}</td><td class="r">${money(x.h.profit - vaShareOf(x.a, x.h.profit, x.h))}</td><td class="note">${esc((x.h.lockedAt || '').slice(0, 10))}</td><td class="note">${(x.h.files || []).length} files${x.h.folder ? ` · ${esc(x.h.folder)}` : ''}</td><td class="row"><button class="btn sm" data-act="histOpen" data-k="${esc(x.k)}">Open</button><button class="btn sm" data-act="histBack" data-k="${esc(x.k)}">Move back</button></td></tr>`).join('') || '<tr><td colspan="9" class="note">Nothing in History yet. Locked months older than last month move here.</td></tr>'}</tbody></table></div></div>`;
+  <div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">eBay net</th><th class="r">Profit</th><th class="r">Shares</th><th class="r">Left for you</th><th>Locked</th><th>Files</th><th></th></tr></thead><tbody>${H.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r">${money(x.h.net)}</td><td class="r">${money(x.h.profit)}</td><td class="r">${money(-vaShareOf(x.a, x.h.profit, x.h, x.m))}</td><td class="r">${money(splitCalc(x.a, x.h.profit, x.h, x.m).left)}</td><td class="note">${esc((x.h.lockedAt || '').slice(0, 10))}</td><td class="note">${(x.h.files || []).length} files${x.h.folder ? ` · ${esc(x.h.folder)}` : ''}</td><td class="row"><button class="btn sm" data-act="histOpen" data-k="${esc(x.k)}">Open</button><button class="btn sm" data-act="histBack" data-k="${esc(x.k)}">Move back</button></td></tr>`).join('') || '<tr><td colspan="9" class="note">Nothing in History yet. Locked months older than last month move here.</td></tr>'}</tbody></table></div></div>`;
 };
 
 // ---------- REGISTER ----------
@@ -1826,7 +1834,7 @@ function weeklyMessage() {
 function skuSales(A) { const s = {}; const txn = txnMerged(S.acct, S.month); if (txn) txn.lines.forEach(l => { if (l.type === 'Order' && l.item && l.sku && /^B-/i.test(l.sku)) s[l.sku] = (s[l.sku] || 0) + (l.qty || 0); }); return s; }
 async function doLock(note) {
   const A = getAudit(S.acct, S.month); const k = S.acct + '|' + S.month;
-  K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, split: JSON.parse(JSON.stringify(splitRows(acctById(S.acct)))), shares: splitCalc(acctById(S.acct), A.profit).total, cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
+  K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, split: JSON.parse(JSON.stringify(splitRows(acctById(S.acct)))), expenses: expFor(S.acct, S.month), shares: splitCalc(acctById(S.acct), A.profit, null, S.month).total, cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
   await save('locks'); log(`Locked ${acctById(S.acct).name} ${S.month}`);
   if (FS.root) { try { await fsWriteReport(acctById(S.acct), S.month, A); } catch (e) { logErr(e, 'write report'); } }
   await archiveOld(); invalidate();
@@ -1899,7 +1907,7 @@ async function fsArchiveMonth(a, m) {
 // ---------- Excel report ----------
 function workbook(a, m, A) {
   const X = XLSX.utils, wb = X.book_new(), p = v => v == null ? '' : Math.round(v) / 100, z = k => A.sums[k] || 0;
-  const sum = [['Audit Desk report'], ['Account', a.name], ['Seller ID', a.seller], ['Month', MLL(m)], ['Period in report', `${A.start || ''} to ${A.end || ''}`], ['Made on', new Date().toLocaleString('en-GB')], [], ['Sales (gross)', p(z('gross'))], ['eBay net', p(z('net'))], ['Cost of goods', p(A.cogs)], ['Profit', p(A.profit)], ...(() => { const c = splitCalc(a, A.profit, K.locks[a.id + '|' + m]); return c.rows.length ? [...c.rows.map(r => [splitLabel(r), p(r.amt)]), ['Left for you', p(c.left)]] : []; })(), ['Orders', z('orders')], ['Units', z('units')], ['Held by eBay', p(A.cash.held)], ['Orders with no cost', A.nCostMissing], [], ['Checks'], ['eBay maths lines that do not add up', A.netFail], ['Cash difference', p(A.cash.diff)], ['P&L tie difference (currency rounding)', p(A.plCheck)], ['Orders report match %', A.orMatch ? A.orMatch.pct : 'no report']];
+  const sum = [['Audit Desk report'], ['Account', a.name], ['Seller ID', a.seller], ['Month', MLL(m)], ['Period in report', `${A.start || ''} to ${A.end || ''}`], ['Made on', new Date().toLocaleString('en-GB')], [], ['Sales (gross)', p(z('gross'))], ['eBay net', p(z('net'))], ['Cost of goods', p(A.cogs)], ['Profit', p(A.profit)], ...(() => { const c = splitCalc(a, A.profit, K.locks[a.id + '|' + m], m); return [...(c.exp ? [['Expenses', p(-c.exp)], ['Profit after expenses', p(c.base)]] : []), ...c.rows.map(r => [splitLabel(r), p(r.amt)]), ...(c.rows.length || c.exp ? [['Left for you', p(c.left)]] : [])]; })(), ['Orders', z('orders')], ['Units', z('units')], ['Held by eBay', p(A.cash.held)], ['Orders with no cost', A.nCostMissing], [], ['Checks'], ['eBay maths lines that do not add up', A.netFail], ['Cash difference', p(A.cash.diff)], ['P&L tie difference (currency rounding)', p(A.plCheck)], ['Orders report match %', A.orMatch ? A.orMatch.pct : 'no report']];
   X.book_append_sheet(wb, X.aoa_to_sheet(sum), 'Summary');
   const pl = [['Line', 'Amount (£)'], ['Sales', p(z('gross'))], ['Refunds', p(z('refunds'))], ['Claims and disputes', p(z('claims') + z('disputes'))], ['Final value fees', p(-z('fvf'))], ['Regulatory operating fee', p(-z('reg'))], ['International fee', p(-z('intl'))], ['Item Not As Described fee', p(-z('inad'))], ['Below Standard fee', p(-z('below'))], ['Fee credits on refunds', p(z('feeCredits'))], ['Final value fee credits', p(z('fvfCreditStandalone'))], ['Insertion fees', p(-z('insertion'))], ['Promoted Listings fees', p(-z('ads'))], ['Promoted Listings credits', p(z('adsCredit'))], ['Store subscription', p(-z('subscription'))], ['Other account fees', p(-z('otherFees'))], ['Postage labels', p(-z('postage'))], ['Other lines', p(z('otherLines'))], ['eBay net', p(z('net'))], ['Cost of goods sold', p(-A.cogs)], ['AliExpress refunds received (statement)', p(A.supplierRefunds || 0)], ['Profit', p(A.profit)]];
   X.book_append_sheet(wb, X.aoa_to_sheet(pl), 'Profit & loss');
@@ -2763,14 +2771,15 @@ setInterval(() => { const busy = (typeof DRV !== 'undefined' && DRV.busy) || (ty
 const spin = ms => { window.AD_SPIN = Date.now() + (ms || 700); document.documentElement.classList.add('adbusy'); };
 
 // ====================== profit split ======================
-function splitCalcLines(a, profit, lock) {
-  const c = splitCalc(a, profit, lock); if (!c.rows.length) return '';
-  return c.rows.map(r => `<span class="l">${esc(splitLabel(r))}</span>${money(-r.amt)}`).join('') + `<span class="l tt">Left for you</span><span class="tt">${money(c.left)}</span>`;
+function splitCalcLines(a, profit, lock, m) {
+  const c = splitCalc(a, profit, lock, m); if (!c.rows.length && !c.exp) return '';
+  return (c.exp ? `<span class="l">Expenses</span>${money(-c.exp)}` : '') + c.rows.map(r => `<span class="l">${esc(splitLabel(r))}</span>${money(-r.amt)}`).join('') + `<span class="l tt">Left for you</span><span class="tt">${money(c.left)}</span>`;
 }
-function splitTiles(a, profit, lock) {
-  const c = splitCalc(a, profit, lock);
-  if (!c.rows.length) return `<div class="card tile"><div class="k">Profit split ${help('Who gets what from this account: Owner (the account holder, also when it is rented), VA, Investor, Handler. Set it once per account.')}</div><div class="v" style="font-size:14px"><button class="btn sm pri" data-act="editAcct" data-id="${a.id}">Set the split</button></div></div>`;
-  return `<div class="card tile"><div class="k">Shares ${help('Profit split of this account (Accounts → Edit → Profit split). % rows give nothing on a loss; a fixed amount such as rent is paid every month.')}</div><div class="v">${fmt(c.total)}</div><div class="note">${c.rows.map(r => `${esc(r.role)} ${fmt(r.amt)}`).join(' · ')}</div></div><div class="card tile hi"><div class="k">Left for you</div><div class="v">${fmt(c.left)}</div></div>`;
+function splitTiles(a, profit, lock, m) {
+  const c = splitCalc(a, profit, lock, m);
+  const expT = `<div class="card tile"><div class="k">Expenses ${help('Costs of this account this month that are not in the eBay report: VA salary, software, packaging, own postage, warehouse… Add them in the Expenses card below or in Money → Expenses.')}</div><div class="v">${fmt(c.exp)}</div><div class="note">Profit after expenses ${fmt(c.base)}</div></div>`;
+  if (!c.rows.length) return expT + `<div class="card tile"><div class="k">Profit split ${help('Who gets what from this account: Owner (the account holder, also when it is rented), VA, Investor, Handler. Set it once per account.')}</div><div class="v" style="font-size:14px"><button class="btn sm pri" data-act="editAcct" data-id="${a.id}">Set the split</button></div></div>`;
+  return expT + `<div class="card tile"><div class="k">Shares ${help('Profit split of this account (Accounts → Edit → Profit split). % rows give nothing on a loss; a fixed amount such as rent is paid every month.')}</div><div class="v">${fmt(c.total)}</div><div class="note">${c.rows.map(r => `${esc(r.role)} ${fmt(r.amt)}`).join(' · ')}</div></div><div class="card tile hi"><div class="k">Left for you</div><div class="v">${fmt(c.left)}</div></div>`;
 }
 const SPLIT_HOW = [{ v: 'pct', l: '% of profit' }, { v: 'left', l: '% of what is left' }, { v: 'fixed', l: '£ fixed a month (rent)' }];
 function defaultSplit(a) {
@@ -2817,7 +2826,7 @@ Object.assign(ACT, {
 // everyone's share, month by month (Money → Shares by person)
 V.shares = () => {
   const rows = {}, per = {};
-  const add = (a, m, profit, lock) => { const c = splitCalc(a, profit, lock); c.rows.forEach(r => r.each.forEach(e => { const k = e.who + '|' + m; const x = rows[k] = rows[k] || { who: e.who, m, roles: new Set(), lines: [], share: 0 }; x.roles.add(r.role); x.lines.push(`${a.name}: ${r.role} ${r.how === 'fixed' ? '£' + r.v : r.v + '%'} of ${fmt(profit)} = ${fmt(e.amt)}`); x.share += e.amt; per[e.who] = (per[e.who] || 0) + e.amt; })); return c; };
+  const add = (a, m, profit, lock) => { const c = splitCalc(a, profit, lock, m); c.rows.forEach(r => r.each.forEach(e => { const k = e.who + '|' + m; const x = rows[k] = rows[k] || { who: e.who, m, roles: new Set(), lines: [], share: 0 }; x.roles.add(r.role); x.lines.push(`${a.name}: ${r.role} ${r.how === 'fixed' ? '£' + r.v : r.v + '%'} of ${fmt(profit)} = ${fmt(e.amt)}`); x.share += e.amt; per[e.who] = (per[e.who] || 0) + e.amt; })); return c; };
   const acc = []; allAudits().forEach(({ a, m, A }) => { const lock = K.locks[a.id + '|' + m]; const c = add(a, m, A.profit, lock); acc.push({ a, m, profit: A.profit, c }); });
   Object.entries(K.history).forEach(([k, h]) => { const [id, m] = k.split('|'); const a = acctById(id); if (!a || !accPass(a) || !monthPass(m) || acc.some(x => x.a.id === id && x.m === m)) return; const c = add(a, m, h.profit, h); acc.push({ a, m, profit: h.profit, c }); });
   const R = Object.values(rows).sort((x, y) => y.m.localeCompare(x.m) || x.who.localeCompare(y.who));
@@ -2911,6 +2920,7 @@ function nextList() {
     const iss = counts().issues; if (iss) L.push({ t: `${iss} open issue${iss > 1 ? 's' : ''} to sort out.`, b: 'Show them', act: 'nxGo', v: 'issues' });
     if (!K.acc.some(a => splitRows(a).length)) L.push({ t: 'Set the profit split (Owner, VA, Investor, Handler) once per account, so every share is worked out by itself.', b: 'Set it', act: 'nxGo', v: 'accounts' });
   } catch (e) { logErr(e, 'next'); }
+  if (S.view === 'audit' && S.acct) L.sort((x, y) => (y.acct === S.acct) - (x.acct === S.acct));
   return L;
 }
 function nextBar() {
@@ -3085,5 +3095,62 @@ intake = async function (file, hint = {}, path = '') {
   } catch (e) { logErr(e, 'open ' + name); }
   return _intake(file, hint, path);
 };
+
+// ====================== expenses ======================
+function expCard(a, m) {
+  const L = expList(a.id, m), lock = K.locks[a.id + '|' + m];
+  return `<div class="card"><div class="row between"><h2>Expenses this month ${help('Costs of this account that are not in the eBay report: VA salary, software, packaging, own postage, warehouse, rent… They come off the profit before the split (you can change that in Money → Expenses).')}</h2><span class="note">Total ${fmt(expFor(a.id, m, lock))}</span></div>
+  ${L.length ? `<div class="list">${L.map(e => `<div class="li"><div class="grow"><div class="t">${esc(e.cat)} · ${fmt(+e.amt)}</div><div class="d">${e.every ? 'Every month' + (e.from ? ' from ' + MLL(e.from) : '') : MLL(e.month)}${e.note ? ' · ' + esc(e.note) : ''}</div></div>${lock ? '' : `<button class="btn sm" data-act="exDel" data-id="${esc(e.id)}">Remove</button>`}</div>`).join('')}</div>` : '<p class="note">No expenses for this month.</p>'}
+  ${lock ? `<p class="note">The month is locked with expenses ${fmt(lock.expenses || 0)}. Unlock to change them.</p>` : expForm(a.id, m)}</div>`;
+}
+function expForm(acct, m, pickAcct) {
+  return `<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">${pickAcct ? dd('ex_acct', null, acct || '', K.acc.map(x => ({ v: x.id, l: x.name })), 'data-help="The account this expense belongs to."') + dd('ex_month', null, m, lastMonths(18).map(x => ({ v: x, l: MLL(x) })), 'data-help="The month of this expense."') : ''}${dd('ex_cat', 'Expense category', (K.reg['Expense category'] || [])[0], null, 'data-help="What the expense is. “+ Add new…” adds a category."')}<input class="in" id="ex_amt" inputmode="decimal" placeholder="£ amount" style="width:110px" data-help="The amount in £."><input class="in" id="ex_note" placeholder="Note (optional)" style="min-width:140px" data-help="A short note, e.g. the invoice number."><label class="row note"><input type="checkbox" id="ex_every"> Every month from now</label><button class="btn sm pri" data-act="exAdd" data-acct="${esc(acct || '')}" data-month="${esc(m)}" data-pick="${pickAcct ? 1 : ''}">Add expense</button></div>`;
+}
+V.expenses = () => {
+  const L = (K.expenses || []).filter(e => { const a = acctById(e.acct); return a && accPass(a); }).sort((x, y) => (y.month || y.from || '').localeCompare(x.month || x.from || ''));
+  const base = K.prefs.splitBase || 'after';
+  return `<h1>Expenses</h1><p class="sub">Costs that are not in the eBay report. One-off or every month. They show in the audit, the split and the reports.</p>
+  <div class="card"><h2>Profit split works on</h2>${dd('splitBase', null, base, [{ v: 'after', l: 'Profit after expenses (expenses first, then the shares)' }, { v: 'before', l: 'Profit before expenses (shares first, expenses come from your part)' }], 'data-act-change="splitBase" data-help="Example: profit £500, expenses £50, VA 30%. After expenses: VA gets 30% of £450 = £135. Before expenses: VA gets 30% of £500 = £150."')}</div>
+  <div class="card"><h2>Add an expense</h2>${expForm(S.acct || (K.acc[0] || {}).id, AD.addMonths(thisMonth(), -1), true)}</div>
+  <div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th>Category</th><th>Note</th><th class="r">Amount</th><th></th></tr></thead><tbody>${L.map(e => `<tr><td>${esc((acctById(e.acct) || {}).name || '')}</td><td>${e.every ? 'Every month from ' + MLL(e.from) : MLL(e.month)}</td><td>${esc(e.cat)}</td><td class="note">${esc(e.note || '')}</td><td class="r">${money(+e.amt)}</td><td>${e.every ? `<button class="btn sm" data-act="exStop" data-id="${esc(e.id)}" data-help="Stops this monthly expense after last month; earlier months keep it.">Stop</button>` : ''}<button class="btn sm" data-act="exDel" data-id="${esc(e.id)}">Remove</button></td></tr>`).join('') || '<tr><td colspan="6" class="note">No expenses yet.</td></tr>'}</tbody></table></div></div>`;
+};
+Object.assign(ACT, {
+  exAdd: async el => {
+    const acct = el.dataset.pick ? ($('#ex_acct') || {}).value : el.dataset.acct, m = el.dataset.pick ? ($('#ex_month') || {}).value : el.dataset.month;
+    const v = AD.num(($('#ex_amt') || {}).value); if (!acct) { toast('Pick the account.'); return; } if (v === null || !(v > 0)) { toast('Type the amount in £.'); $('#ex_amt').focus(); return; }
+    if (K.locks[acct + '|' + m]) { toast('That month is locked. Unlock it first.'); return; }
+    const every = $('#ex_every') && $('#ex_every').checked; const cat = ($('#ex_cat') || {}).value;
+    K.expenses = K.expenses || []; K.expenses.push({ id: 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), acct, month: every ? '' : m, every: !!every, from: every ? m : '', cat: cat && cat !== '__add' ? cat : 'Other', amt: Math.round(v * 100), note: (($('#ex_note') || {}).value || '').trim(), by: K.prefs.owner, at: new Date().toISOString() });
+    await save('expenses'); invalidate(); toast(`Expense added: ${fmt(Math.round(v * 100))}.`); render();
+  },
+  exDel: async el => { const i = (K.expenses || []).findIndex(e => e.id === el.dataset.id); if (i < 0) return; const e = K.expenses[i]; const lk = Object.keys(K.locks).find(k => k.startsWith(e.acct + '|') && (e.month ? k.endsWith('|' + e.month) : k.split('|')[1] >= (e.from || ''))); if (lk && !e.every) { toast('That month is locked. Unlock it first.'); return; } K.expenses.splice(i, 1); await save('expenses'); invalidate(); toast('Expense removed.'); render(); },
+  exStop: async el => { const e = (K.expenses || []).find(x => x.id === el.dataset.id); if (!e) return; e.to = AD.addMonths(thisMonth(), -1); await save('expenses'); invalidate(); toast('Stopped after ' + MLL(e.to) + '.'); render(); }
+});
+document.addEventListener('change', async ev => { if (ev.target.dataset && ev.target.dataset.actChange === 'splitBase') { K.prefs.splitBase = ev.target.value; await save('prefs'); invalidate(); toast('Saved. Every split is worked out again.'); render(); } });
+GROUPS.find(g => g[0] === 'g_money')[3].splice(1, 0, ['expenses', 'Expenses']); VIEW_NAME.expenses = 'Expenses'; GO_HELP.expenses = 'Expenses: costs that are not in the eBay report, one-off or every month.';
+
+// ====================== audit score: how sure the numbers are ======================
+function auditScore(a, m, A) {
+  if (!A || !A.sums || A.kind !== 'ebay') return null;
+  const C = []; const add = (w, got, t, fix) => C.push({ w, got: Math.max(0, Math.min(1, got)), t, fix });
+  add(20, A.netFail ? 1 - A.netFail / Math.max(1, A.blocks) : 1, A.netFail ? `${A.netFail} order lines in the eBay report do not add up` : 'eBay maths adds up on every order line');
+  add(15, Math.abs(A.cash.diff) <= 1 ? 1 : 0, Math.abs(A.cash.diff) <= 1 ? 'Cash balances to the penny' : `Cash is out by ${fmt(A.cash.diff)}`);
+  add(10, A.orMatch ? (A.orMatch.onlyTxn.length + A.orMatch.onlyOr.length ? 0.5 : 1) : 0, A.orMatch ? (A.orMatch.onlyTxn.length + A.orMatch.onlyOr.length ? 'Some orders are only in one report' : 'Orders report matches the Transaction report') : 'No Orders report yet', A.orMatch ? null : { act: 'pick', acct: a.id, month: m, label: 'Add it' });
+  const sold = A.costKnown + A.nCostMissing; add(20, sold ? A.costKnown / sold : 1, A.nCostMissing ? `${A.nCostMissing} orders have no cost` : 'Every sold order has a cost', A.nCostMissing ? { act: 'ofl', v: 'No cost found', label: 'Show them' } : null);
+  add(10, A.payMatch ? A.payMatch.found / Math.max(1, A.payMatch.total) : 0, A.payMatch ? `${A.payMatch.found} of ${A.payMatch.total} payouts found in the bank / Wise` : 'No bank / Wise statement yet, so payouts are not proven', A.payMatch ? null : { act: 'pick', acct: a.id, month: m, label: 'Add it' });
+  if (a.type !== 'Own stock') add(10, A.aeMatch && A.aeMatch.tried ? A.aeMatch.hit / A.aeMatch.tried : 0, A.aeMatch && A.aeMatch.tried ? `${A.aeMatch.hit} of ${A.aeMatch.tried} supplier costs found on the card statement` : 'Supplier costs are not checked against the card yet');
+  const s = K.shots[a.id + '|' + m]; let sb = 0; try { sb = s ? shotCompare(A, s).filter(r => r.bad).length : 0; } catch (e) { }
+  add(5, s ? (sb ? 0.4 : 1) : 0, s ? (sb ? `${sb} screenshot numbers do not match` : 'Seller Hub screenshot matches') : 'No Seller Hub screenshot numbers');
+  let open = 0; try { open = issuesAll().filter(i => i.acctId === a.id && i.month === m && isOpen(i) && i.sev === 'bad').length; } catch (e) { }
+  add(10, open ? 0 : 1, open ? `${open} serious issue${open > 1 ? 's are' : ' is'} open` : 'No serious issue open', open ? { act: 'tab', t: 'issues', label: 'Show them' } : null);
+  const W = C.reduce((x, c) => x + c.w, 0), G = C.reduce((x, c) => x + c.w * c.got, 0); const pct = Math.round(100 * G / W);
+  return { pct, C, cls: pct >= 90 ? 'ok' : pct >= 70 ? 'warn' : 'bad' };
+}
+function scoreCard(a, m, A) {
+  const sc = auditScore(a, m, A); if (!sc) return '';
+  return `<div class="card score s-${sc.cls}"><div class="row between"><h2>Audit score: ${sc.pct}% ${help('How sure the numbers are. Each check adds points: eBay maths, cash, both reports, a cost for every order, payouts in the bank, supplier costs on the card, the Seller Hub screenshot and no serious issue open. 90% and above is green.')}</h2><div class="bar" style="flex:1;max-width:260px;margin-left:12px"><i style="width:${sc.pct}%"></i></div></div><div class="list">${sc.C.map(c => `<div class="li"><div class="ic i-${c.got >= 0.999 ? 'ok' : c.got > 0 ? 'warn' : 'bad'}">${c.got >= 0.999 ? '✓' : '!'}</div><div class="grow">${esc(c.t)}</div><div class="note num">${Math.round(c.w * c.got)}/${c.w}</div>${c.fix ? fixBtn(c.fix) : ''}</div>`).join('')}</div></div>`;
+}
+const _tsum = T.summary;
+T.summary = (a, m, A) => (A && A.kind === 'ebay' ? scoreCard(a, m, A) : '') + _tsum(a, m, A) + expCard(a, m);
 </script>
 </body></html>
