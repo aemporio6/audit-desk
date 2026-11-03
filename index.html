@@ -157,7 +157,7 @@ html.phone .nw{opacity:.7}
 .hp-t{display:flex;gap:8px;align-items:flex-start;line-height:1.4}.hp-t .lg{width:22px;height:22px;flex:none}
 html.helpon [data-act],html.helpon [data-go],html.helpon select{cursor:help}
 html.helpon #helpBtn{box-shadow:0 0 0 3px var(--warn-soft)}
-#view,.top{position:relative;z-index:2}
+#view{position:relative;z-index:1}
 .card{position:relative}
 html.phone .nextbar .grow{flex:1 1 calc(100% - 44px)}html.phone .nextbar>.row{flex-basis:100%;justify-content:flex-end}
 .score.s-ok{border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}.score.s-warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}.score.s-bad{border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
@@ -170,6 +170,10 @@ html.phone .nextbar .grow{flex:1 1 calc(100% - 44px)}html.phone .nextbar>.row{fl
 html.locked .app,html.locked #wm{visibility:hidden}
 .printhead,.printfoot{display:none}
 @media print{.printhead{display:flex;gap:12px;align-items:center;border-bottom:2px solid #173f78;padding-bottom:8px;margin-bottom:12px}.printhead .lg{width:42px;height:42px}.printhead .lg svg{width:100%;height:100%}.printfoot{display:block;position:fixed;bottom:0;left:0;right:0;font-size:9px;color:#666;text-align:center}#wm{display:block!important;left:50%!important;opacity:.07!important;animation:none!important}.nextbar,#helppop,#lockscr{display:none!important}}
+.nw{display:none!important}
+a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;color:inherit}a.btn.pri{color:var(--panel)}a.nav{text-decoration:none}
+a[role="button"]{text-decoration:none;color:inherit;cursor:pointer}a[role="button"].btn.pri{color:var(--panel)}
+html.phone #helpBtn{width:36px;padding-left:0;padding-right:0;overflow:hidden;white-space:nowrap;text-indent:-999px;position:relative}html.phone #helpBtn::after{content:'?';text-indent:0;position:absolute;inset:0;display:grid;place-items:center;font-weight:700}
 
 html.phone .app{grid-template-columns:1fr}
 html.phone .rail{display:none}
@@ -885,7 +889,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.0.0';
+const APPV = '2.0.1';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -1058,7 +1062,8 @@ function place(rec) {
   });
   rec.parts.forEach(p => { p.needs = null; });
   siblings(rec);
-  rec.parts.forEach(p => { if (p.placedBy === 'its name' || p.placedBy === 'other tabs of the same file belong to it' || p.monthGuess || p.auto) p.check = true; });
+  const strong = rec.parts.some(p => p.placedBy === 'order numbers match its eBay reports');
+  rec.parts.forEach(p => { if (p.placedBy === 'its name' || (p.placedBy === 'other tabs of the same file belong to it' && !strong) || p.monthGuess || p.auto) p.check = true; });
   rec.status = 'ok';
 }
 // which account has the most eBay orders in common with these order numbers
@@ -1307,12 +1312,15 @@ const isOpen = i => i.status === 'Open' || i.status === 'In progress';
 function defaultOwner(i) { const r = (AD.ISSUES[i.kind] || {}).role; const a = acctById(i.acctId); if (r === 'VA' && a && a.va) return a.va; return K.prefs.owner; }
 
 // ---------- stock ----------
+// own stock: SKUs like B4-POPIT-…, B240-WINDOW-…, or any SKU sold by an account set to Own stock / Mixed
+const OWN_RE = /^B\d+[-_]/i;
+function isOwnSku(sku, acctId) { if (OWN_RE.test(String(sku || '').trim())) return true; const a = acctId && acctById(acctId); return !!(a && /own|mixed/i.test(a.type || '') && sku); }
 function stockReport() {
   const sales = {};
-  activeParts('ebay_txn').filter(p => !p.replacedBy && !p._file._hist && !K.history[p.acct + '|' + p.month]).forEach(p => p.lines.forEach(l => { if (l.type === 'Order' && l.sku && l.item && /^B-/i.test(l.sku)) { (sales[l.sku] = sales[l.sku] || {}); sales[l.sku][p.month] = (sales[l.sku][p.month] || 0) + (l.qty || 0); } }));
+  activeParts('ebay_txn').filter(p => !p.replacedBy && !p._file._hist && !K.history[p.acct + '|' + p.month]).forEach(p => p.lines.forEach(l => { if (l.type === 'Order' && l.sku && l.item && isOwnSku(l.sku, p.acct)) { (sales[l.sku] = sales[l.sku] || {}); sales[l.sku][p.month] = (sales[l.sku][p.month] || 0) + (l.qty || 0); } }));
   Object.entries(K.history).forEach(([k, h]) => Object.entries(h.skuSales || {}).forEach(([sku, q]) => { const m = k.split('|')[1]; (sales[sku] = sales[sku] || {}); sales[sku][m] = (sales[sku][m] || 0) + q; }));
   const ins = K.stockIn.map(s => ({ sku: s.sku, qty: +s.qty || 0, cost: s.cost, date: s.date }));
-  const opening = activeParts('stock_cost').flatMap(p => p.rows).filter(r => r.qty);
+  const opening = activeParts('stock_cost').flatMap(p => p.rows).filter(r => r.qty > 0 && Number.isInteger(+r.qty) && isOwnSku(r.sku));
   { const seen = new Set(K.stockIn.map(s => s.sku)); opening.forEach(r => { if (!seen.has(r.sku)) { seen.add(r.sku); ins.push({ sku: r.sku, qty: r.qty, cost: r.cost, date: '0000' }); } }); }
   return AD.stock(ins, sales);
 }
@@ -1552,9 +1560,9 @@ V.add = () => {
   ${driveCard()}
   <div class="card"><h2>Add a file by hand (optional)</h2><div class="form"><label><span>Account ${help('Leave on “Find it from the file”. eBay reports carry the seller ID, so the tool always places them correctly.')}</span>${dd('hintAcct', null, S.hint.acct, [{ v: '', l: 'Find it from the file' }, ...K.acc.map(a => ({ v: a.id, l: a.name }))])}</label><label><span>Month ${help('Only used for screenshots and PDFs. Reports carry their own dates.')}</span>${dd('hintMonth', null, S.hint.month, [{ v: '', l: 'Find it from the file' }, ...lastMonths(14).map(m => ({ v: m, l: MLL(m) }))])}</label></div>
   <label class="drop" id="drop" tabindex="0"><input type="file" id="fin" multiple hidden><b>Drop files here</b><span>or tap to choose · on a phone you can pick from Google Drive</span></label>
-  ${fsOK ? `<div class="row" style="margin-top:8px"><button class="btn" data-act="fsConnect">${FS.root ? 'Scan Drive folder again' : 'Connect Google Drive folder (computer)'}</button><span class="note">${FS.root ? `Connected: ${esc(FS.root.name)} · new files are read, old months move to “Audits Archive”` : 'Works with Google Drive for desktop in Chrome or Edge. The tool reads new files from the Audits folder, writes reports back and moves old months to “Audits Archive”.'}</span></div>` : ''}</div>
+  ${fsOK ? `<div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn" data-act="fsConnect">${FS.root ? 'Read the computer folder again' : 'Read a folder on this computer'}</button>${FS.root ? '<button class="btn" data-act="fsOther">Choose another folder</button><button class="btn" data-act="fsStop">Stop reading it</button>' : ''}<span class="note">${FS.root ? `Reading: ${esc(FS.root.name)} (on this computer)` : 'Optional. Google Drive is read by itself; this is only for a folder that is on this computer.'}</span></div>` : ''}</div>
   ${S.results.length ? `<div class="card"><div class="row between"><h2>What the tool found</h2><button class="btn sm" data-act="clearRes">Clear</button></div>${S.results.map(r => `<div style="margin-top:8px"><div class="t" style="font-weight:600">${esc(r.name)}</div>${msgList(r.msgs)}</div>`).join('')}${nextAfterUpload()}</div>` : ''}
-  <div class="card"><h2>Files in the tool (${FILES.length})</h2><div class="tw"><table><thead><tr><th>File</th><th>What it is</th><th>Account</th><th>Month</th><th>Added</th><th></th></tr></thead><tbody>${FILES.slice().sort((a, b) => b.added.localeCompare(a.added)).map(f => f.parts.map((p, i) => `<tr><td>${i ? '' : esc(f.name)}</td><td>${esc(p.kind === 'unknown' ? 'Unknown layout' : (p.label || KIND_LABEL[p.kind]))}${p.sheet && p.sheet !== f.name ? ` <span class="note">· ${esc(p.sheet)}</span>` : ''}${p.replacedBy ? ' ' + pill('Replaced by newer download', 'grey') : ''}${p.ignored ? ' ' + pill('Ignored', 'grey') : ''}</td><td>${p.acct === '*' ? 'All accounts' : esc((acctById(p.acct) || {}).name || '–')}</td><td>${p.month ? ML(p.month) : (p.start ? `${p.start} → ${p.end}` : '–')}</td><td class="note">${i ? '' : f.added.slice(0, 10)}</td><td>${i ? '' : `<button class="btn sm" data-act="delFile" data-id="${f.id}">Remove</button>`}</td></tr>`).join('')).join('') || '<tr><td colspan="6" class="note">No files yet.</td></tr>'}</tbody></table></div></div>`;
+  <div class="card"><h2>Files in the tool (${FILES.length})</h2><div class="tw"><table><thead><tr><th>File</th><th>What it is</th><th>Account</th><th>Month</th><th>Added</th><th></th></tr></thead><tbody>${FILES.slice().sort((a, b) => b.added.localeCompare(a.added)).map(f => f.parts.map((p, i) => `<tr><td>${i ? `<span class="note">↳ same file</span>` : esc(f.name)}</td><td>${esc(p.kind === 'unknown' ? 'Unknown layout' : (p.label || KIND_LABEL[p.kind]))}${p.sheet && p.sheet !== f.name ? ` <span class="note">· ${esc(p.sheet)}</span>` : ''}${p.replacedBy ? ' ' + pill('Replaced by newer download', 'grey') : ''}${p.ignored ? ' ' + pill('Ignored', 'grey') : ''}</td><td>${p.acct === '*' ? 'All accounts' : esc((acctById(p.acct) || {}).name || '–')}</td><td>${p.month ? ML(p.month) : (p.start ? `${p.start} → ${p.end}` : '–')}</td><td class="note">${i ? '' : f.added.slice(0, 10)}</td><td>${i ? '' : `<button class="btn sm" data-act="delFile" data-id="${f.id}">Remove</button>`}</td></tr>`).join('')).join('') || '<tr><td colspan="6" class="note">No files yet.</td></tr>'}</tbody></table></div></div>`;
 };
 const help = t => `<button class="help" type="button" title="${esc(t)}" aria-label="${esc(t)}" data-act="help" data-t="${esc(t)}">?</button>`;
 const lastMonths = n => { const L = []; let m = thisMonth(); for (let i = 0; i < n; i++) { L.push(m); m = AD.addMonths(m, -1); } return L; };
@@ -1575,7 +1583,7 @@ function cellState(a, m) {
   const open = issuesAll().filter(i => i.acctId === a.id && i.month === m && isOpen(i));
   const bad = open.filter(i => i.sev === 'bad').length;
   if (lock) return ['ok', 'Locked', `Profit ${fmt(lock.profit)}`];
-  return [bad ? 'bad' : open.length ? 'warn' : 'ok', bad ? `${bad} serious issues` : open.length ? `${open.length} to check` : 'Ready to lock', `eBay net ${fmt(A.sums.net)}`];
+  return [bad ? 'bad' : open.length ? 'warn' : 'ok', bad ? `${bad} serious issue${bad > 1 ? "s" : ""}` : open.length ? `${open.length} to check` : 'Ready to lock', `eBay net ${fmt(A.sums.net)}`];
 }
 V.accounts = () => {
   const ms = auditMonths().filter(monthPass).slice(-6).reverse(); const accs = K.acc.filter(accPass);
@@ -1699,7 +1707,7 @@ V.trend = () => {
 V.stock = () => {
   const R = Object.values(stockReport()).sort((a, b) => (b.negative - a.negative) || a.sku.localeCompare(b.sku));
   const val = R.reduce((s, r) => s + Math.max(0, r.value), 0);
-  return `<div class="row between"><div><h1>Stock</h1><p class="sub">Own stock (B- SKUs). Stock in − sold on eBay = left. Sold units come from the eBay reports automatically.</p></div><button class="btn pri" data-act="stockAdd">+ Stock in</button></div>
+  return `<div class="row between"><div><h1>Stock</h1><p class="sub">Own stock (SKUs like B4-…, B240-…, and everything sold by an Own stock account). Stock in − sold on eBay = left. Sold units come from the eBay reports automatically.</p></div><button class="btn pri" data-act="stockAdd">+ Stock in</button></div>
   <div class="grid"><div class="card tile"><div class="k">SKUs</div><div class="v">${R.length}</div></div><div class="card tile"><div class="k">Stock value left</div><div class="v">${fmt(val)}</div></div><div class="card tile"><div class="k">Negative stock</div><div class="v">${R.filter(r => r.negative).length}</div></div></div>
   ${!K.stockIn.length ? `<div class="check w">No stock-in entries yet. ${activeParts('stock_cost').length ? 'Opening stock is taken from the stock cost list.' : 'Upload the “eBay STOCK” sheet or add stock in.'}</div>` : ''}
   <div class="card"><div class="tw"><table><thead><tr><th>SKU</th><th class="r">In</th><th class="r">Sold</th><th class="r">Left</th><th class="r">Value left</th><th class="r">Cost of sold (FIFO)</th></tr></thead><tbody>${R.slice(0, 600).map(r => `<tr><td>${esc(r.sku)}</td><td class="r num">${r.inQty}</td><td class="r num">${r.soldQty}</td><td class="r">${r.negative ? `<span class="pill p-bad">${r.left}</span>` : `<span class="num">${r.left}</span>`}</td><td class="r">${money(r.value)}</td><td class="r">${money(r.cogs)}</td></tr>`).join('') || '<tr><td colspan="6" class="note">No stock data yet.</td></tr>'}</tbody></table></div></div>
@@ -1852,7 +1860,7 @@ function weeklyMessage() {
 }
 
 // ---------- lock, history (archive) ----------
-function skuSales(A) { const s = {}; const txn = txnMerged(S.acct, S.month); if (txn) txn.lines.forEach(l => { if (l.type === 'Order' && l.item && l.sku && /^B-/i.test(l.sku)) s[l.sku] = (s[l.sku] || 0) + (l.qty || 0); }); return s; }
+function skuSales(A) { const s = {}; const txn = txnMerged(S.acct, S.month); if (txn) txn.lines.forEach(l => { if (l.type === 'Order' && l.item && l.sku && isOwnSku(l.sku, S.acct)) s[l.sku] = (s[l.sku] || 0) + (l.qty || 0); }); return s; }
 async function doLock(note) {
   const A = getAudit(S.acct, S.month); const k = S.acct + '|' + S.month;
   K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, split: JSON.parse(JSON.stringify(splitRows(acctById(S.acct)))), expenses: expFor(S.acct, S.month), shares: splitCalc(acctById(S.acct), A.profit, null, S.month).total, cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
@@ -1898,9 +1906,7 @@ const safe = s => String(s || 'No team').replace(/[\\/:*?"<>|]/g, '-').trim();
 async function monthDir(a, m, base) { const r = base || await auditsRoot(); return dir(await dir(await dir(r, safe(a.Team)), safe(`${a.Platform} - ${a.name}`)), m); }
 async function fsScan() {
   if (!(await fsEnsure())) { toast('Please allow access to the folder.'); return; }
-  const root = await auditsRoot();
-  // create this month's folders for every account
-  for (const a of K.acc) { try { await monthDir(a, thisMonth(), root); } catch (e) { } }
+  const root = FS.root;
   const seen = K.prefs.seen || (K.prefs.seen = {}); const files = [];
   async function walk(d, path) { for await (const [n, h] of d.entries()) { if (h.kind === 'directory') { if (n === 'Audit Report') continue; await walk(h, path + '/' + n); } else { const f = await h.getFile(); const key = path + '/' + n + '|' + f.size + '|' + f.lastModified; if (!seen[key] && !n.startsWith('~$') && !n.startsWith('.')) { files.push({ f, path, key }); } } } }
   await walk(root, root.name);
@@ -2020,6 +2026,8 @@ const ACT = {
   delFile: async el => { const f = FILES.find(x => x.id === el.dataset.id); if (!f) return; FILES.splice(FILES.indexOf(f), 1); await DB.del('files', f.id); FILES.forEach(g => g.parts.forEach(q => { if (q.replacedBy === f.id) q.replacedBy = null; })); invalidate(); log('File removed: ' + f.name); toast(`Removed “${f.name}”.`, async () => { FILES.push(f); await DB.put('files', f.id, f); invalidate(); }); render(); },
   clearRes: () => { S.results = []; render(); },
   fsConnect: () => FS.root ? fsScan() : fsConnect(),
+  fsOther: () => fsConnect(),
+  fsStop: async () => { FS.root = null; await DB.del('kv', 'fsroot').catch(() => { }); toast('Stopped reading the computer folder. Files already read stay.'); render(); },
   addAcct: () => acctModal(null),
   editAcct: el => acctModal(el.dataset.id),
   acSave: el => {
@@ -2159,7 +2167,7 @@ Object.assign(ACT, { updTool: () => { const i = document.createElement('input');
 const GCLIENT = '605045779540-i1fjvdt40h3aaf3j0iv337g5tvvjmd0h.apps.googleusercontent.com';
 const IS_WEB = !IS_GAS && !(window.claude && window.claude.use) && /^https?:$/.test(location.protocol);
 const GW = { token: null, exp: 0, email: '', client: null, waiters: [], need: false };
-try { GW.email = localStorage.getItem('ad-gmail') || ''; } catch (e) { }
+try { GW.email = localStorage.getItem('ad-gmail') || ''; const t = JSON.parse(localStorage.getItem('ad-gtok') || 'null'); if (t && t.exp > Date.now() + 60000) { GW.token = t.t; GW.exp = t.exp; } } catch (e) { }
 function gwLoadLib() {
   return new Promise(res => { if (window.google && google.accounts && google.accounts.oauth2) return res(true); const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.onload = () => res(true); s.onerror = () => res(false); document.head.appendChild(s); });
 }
@@ -2167,7 +2175,7 @@ async function gwInitClient() {
   if (GW.client) return true; if (!(await gwLoadLib())) return false;
   GW.client = google.accounts.oauth2.initTokenClient({
     client_id: GCLIENT, scope: 'https://www.googleapis.com/auth/drive openid email',
-    callback: r => { if (r && r.access_token) { GW.token = r.access_token; GW.exp = Date.now() + ((+r.expires_in || 3600) - 120) * 1000; GW.need = false; GW.waiters.splice(0).forEach(f => f(true)); gwAfterLogin(); } else GW.waiters.splice(0).forEach(f => f(false)); },
+    callback: r => { if (r && r.access_token) { GW.token = r.access_token; GW.exp = Date.now() + ((+r.expires_in || 3600) - 120) * 1000; try { localStorage.setItem('ad-gtok', JSON.stringify({ t: GW.token, exp: GW.exp })); } catch (e) { } GW.need = false; GW.waiters.splice(0).forEach(f => f(true)); gwAfterLogin(); } else GW.waiters.splice(0).forEach(f => f(false)); },
     error_callback: () => GW.waiters.splice(0).forEach(f => f(false))
   });
   return true;
@@ -2187,7 +2195,7 @@ async function gwAfterLogin() {
 async function gwFetch(url, opt = {}) {
   if (!gwOk()) { GW.need = true; shell(); throw Object.assign(new Error('Google sign-in needed'), { code: 'needs_reauth' }); }
   const r = await fetch(url, Object.assign({}, opt, { headers: Object.assign({ Authorization: 'Bearer ' + GW.token }, opt.headers || {}) }));
-  if (r.status === 401) { GW.token = null; GW.need = true; shell(); throw Object.assign(new Error('Google sign-in expired'), { code: 'needs_reauth' }); }
+  if (r.status === 401) { GW.token = null; try { localStorage.removeItem('ad-gtok'); } catch (e) { } GW.need = true; shell(); throw Object.assign(new Error('Google sign-in expired'), { code: 'needs_reauth' }); }
   if (!r.ok) { const t = await r.text().catch(() => ''); throw Object.assign(new Error(`Google Drive ${r.status}: ${t.slice(0, 200)}`), { code: r.status >= 500 ? 'server_unavailable' : 'tool_error' }); }
   return r;
 }
@@ -2420,7 +2428,7 @@ async function syncWrite(k) {
 }
 let _syncRender = null;
 function syncInit() {
-  if (IS_WEB) return; // starts after Sign in with Google
+  if (IS_WEB) { if (typeof gwOk === 'function' && gwOk()) syncStart(GWDB); return; } // otherwise starts after Sign in with Google
   if (!IS_GAS && !(window.claude && window.claude.use)) return;
   syncStart(IS_GAS ? GASDB : null);
 }
@@ -2914,7 +2922,7 @@ shell = function () {
   } catch (e) { logErr(e, 'menu'); }
 };
 Object.assign(ACT, { grp: el => { const k = el.dataset.k; const og = groupOf(S.view); const open = S.grp[k] !== undefined ? S.grp[k] : og === k; S.grp[k] = !open; shell(); } });
-V.menu = () => `<h1>More</h1><p class="note">Viewing as ${esc(K.prefs.viewAs)} · ${typeof SYNC !== 'undefined' && SYNC.db ? esc(syncLabel()) : 'Saved on this device'} · Version ${APPV}</p>${GROUPS.filter(g => g[3].length).map(([k, l, ico, subs]) => `<div class="card"><h2>${ico} ${esc(l)}</h2><div class="list">${subs.filter(s => !(ROLE_HIDE[K.prefs.viewAs] || []).includes(s[0])).map(([v, n]) => `<div class="li"><a class="grow nav" href="${esc(hashFor({ view: v }))}" data-go="${v}" style="padding:10px 4px">${esc(n)}</a><a class="btn sm" href="${esc(hashFor({ view: v }))}" target="_blank" rel="noopener" aria-label="Open ${esc(n)} in a new window">↗</a></div>`).join('')}</div></div>`).join('')}<div class="card"><div class="list"><a class="nav" href="${esc(hashFor({ view: 'stock' }))}" data-go="stock" style="padding:10px 4px">▤ Stock</a></div></div>`;
+V.menu = () => `<h1>More</h1><p class="note">Viewing as ${esc(K.prefs.viewAs)} · ${typeof SYNC !== 'undefined' && SYNC.db ? esc(syncLabel()) : 'Saved on this device'} · Version ${APPV}</p>${GROUPS.filter(g => g[3].length).map(([k, l, ico, subs]) => `<div class="card"><h2>${ico} ${esc(l)}</h2><div class="list">${subs.filter(s => !(ROLE_HIDE[K.prefs.viewAs] || []).includes(s[0])).map(([v, n]) => `<div class="li"><a class="grow nav" href="${esc(hashFor({ view: v }))}" data-go="${v}" style="padding:10px 4px">${esc(n)}</a></div>`).join('')}</div></div>`).join('')}<div class="card"><div class="list"><a class="nav" href="${esc(hashFor({ view: 'stock' }))}" data-go="stock" style="padding:10px 4px">▤ Stock</a></div></div>`;
 // breadcrumb with the group and a new-window button
 crumbs = function () {
   const L = [['home', 'Home']]; const g = groupOf(S.view); const gl = g ? GROUPS.find(x => x[0] === g)[1] : '';
@@ -2927,7 +2935,7 @@ crumbs = function () {
 function nextList() {
   const L = [];
   try {
-    const chk = activeParts().filter(p => p.check && !p.checked && !p.ignored && p.kind !== 'unknown').length;
+    const chk = new Set(activeParts().filter(p => p.check && !p.checked && !p.ignored && p.kind !== 'unknown').map(p => p._file.id)).size;
     if (chk) L.push({ t: `${chk} file${chk > 1 ? 's were' : ' was'} placed by a best guess. One look and they are done.`, b: 'Check them', act: 'nxGo', v: 'home' });
     const m0 = AD.addMonths(thisMonth(), -1);
     K.acc.filter(accPass).forEach(a => {
@@ -3022,7 +3030,7 @@ Object.assign(ACT, { helpMode: () => { HELP.on = !HELP.on; try { localStorage.se
 document.documentElement.classList.toggle('helpon', HELP.on);
 V.helpv = () => `<h1>Help</h1><p class="sub">How the tool works. Turn on <b>Help</b> at the top: then every button and box explains itself before it does anything.</p>
   <div class="card"><h2>The month in 5 steps</h2><div class="list">${[['1', 'Files come in by themselves from Google Drive (or drop any file anywhere). Any name, any layout, pictures and PDFs too.'], ['2', 'The tool works out what each file is, which account and which month. Guesses show in “Please check” with dropdowns.'], ['3', 'Follow the “Next” bar at the top of every screen. It always shows the most useful next step with a button that does it.'], ['4', 'Open issues show what does not add up, with the orders behind them.'], ['5', 'Lock the month. The profit split (Owner, VA, Investor, Handler) is worked out and kept with it.']].map(([n, t]) => `<div class="li"><div class="ic i-ok">${n}</div><div class="grow">${esc(t)}</div></div>`).join('')}</div></div>
-  <div class="card"><h2>Screens</h2><div class="list">${Object.entries(GO_HELP).filter(([k]) => k !== 'menu').map(([k, t]) => `<div class="li"><div class="grow">${esc(t)}</div><a class="btn sm" href="${esc(hashFor({ view: k }))}" data-go="${k}">Open</a><a class="btn sm" href="${esc(hashFor({ view: k }))}" target="_blank" rel="noopener" aria-label="Open in a new window">↗</a></div>`).join('')}</div></div>
+  <div class="card"><h2>Screens</h2><div class="list">${Object.entries(GO_HELP).filter(([k]) => k !== 'menu').map(([k, t]) => `<div class="li"><div class="grow">${esc(t)}</div><a class="btn sm" href="${esc(hashFor({ view: k }))}" data-go="${k}">Open</a></div>`).join('')}</div></div>
   <div class="card"><h2>Buttons</h2><div class="tw"><table><tbody>${Object.entries(HELPT).map(([k, t]) => `<tr><td class="note num">${esc(k)}</td><td>${esc(t)}</td></tr>`).join('')}</tbody></table></div></div>`;
 
 // ====================== Drive folders: whole Drive or chosen folders ======================
@@ -3393,5 +3401,23 @@ ACT.word = () => {
   <p style="color:#5b6877;font-size:9pt;margin-top:24pt">${esc(stamp())}</p></body></html>`;
   saveFile(`${a.name} ${m} Audit.doc`, new Blob(['﻿' + html], { type: 'application/msword' }));
 };
+
+/* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
+'use strict';
+// every screen button becomes a real link: right-click → Open in new tab / window works, and the new window stays signed in
+function hashOfEl(el) {
+  if (el.dataset.go) return hashFor({ view: el.dataset.go, list: el.dataset.list });
+  if (['goAudit', 'lkGo', 'issOrders'].includes(el.dataset.act) && el.dataset.acct && el.dataset.month) return hashFor({ view: 'audit', acct: el.dataset.acct, month: el.dataset.month, tab: el.dataset.act === 'issOrders' ? 'orders' : 'summary' });
+  return null;
+}
+function linkify() {
+  $$('button[data-go], button[data-act="goAudit"], button[data-act="lkGo"]').forEach(b => {
+    if (b.closest('#lockscr') || b.closest('.ms') || b.closest('#mob')) return; const h = hashOfEl(b); if (!h) return;
+    const a = document.createElement('a'); [...b.attributes].forEach(x => { if (x.name !== 'type') a.setAttribute(x.name, x.value); }); a.href = h; a.innerHTML = b.innerHTML; a.setAttribute('role', 'button'); b.replaceWith(a);
+  });
+}
+let LF = null; new MutationObserver(() => { clearTimeout(LF); LF = setTimeout(linkify, 30); }).observe(document.body, { childList: true, subtree: true });
+// a normal click on such a link runs the action in place (no page jump); right-click / Ctrl-click opens a new window by the browser
+document.addEventListener('click', ev => { const a = ev.target.closest && ev.target.closest('a[data-act], a[data-go]'); if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button !== 0) return; ev.preventDefault(); }, true);
 </script>
 </body></html>
