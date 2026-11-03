@@ -889,7 +889,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.0.1';
+const APPV = '2.0.2';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -2845,6 +2845,7 @@ function splitEditorRead() {
 document.addEventListener('change', ev => {
   const ed = ev.target.closest && ev.target.closest('#spEd'); if (!ed) return;
   if (ev.target.value === '__add') return; // the normal "+ Add new" flow
+  if (ev.target.closest('.anBox')) return;
   S.sp = splitEditorReadDOM(); S.spDef = !!($('#spDef') && $('#spDef').checked); ed.innerHTML = splitEditorHTML();
 });
 document.addEventListener('input', ev => { if (ev.target.closest && ev.target.closest('#spEd') && /^sp_v_/.test(ev.target.id)) { S.sp = splitEditorReadDOM(); const p = splitCalc({ split: S.sp.filter(r => r.v !== '') }, 50000); const el = $('#spPrev'); if (el) el.innerHTML = `<span class="l">Example: profit £500.00</span>${money(50000)}${p.rows.map(r => `<span class="l">${esc(splitLabel(r))}</span>${money(-r.amt)}`).join('')}<span class="l tt">Left for you</span><span class="tt">${money(p.left)}</span>`; } });
@@ -3419,5 +3420,58 @@ function linkify() {
 let LF = null; new MutationObserver(() => { clearTimeout(LF); LF = setTimeout(linkify, 30); }).observe(document.body, { childList: true, subtree: true });
 // a normal click on such a link runs the action in place (no page jump); right-click / Ctrl-click opens a new window by the browser
 document.addEventListener('click', ev => { const a = ev.target.closest && ev.target.closest('a[data-act], a[data-go]'); if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button !== 0) return; ev.preventDefault(); }, true);
+
+// ====================== "+ Add new" everywhere ======================
+// 1) a new list value is typed right under its dropdown (also inside a window), and it appears in every dropdown of that list at once
+addNewModal = function (list, selectId) {
+  const sel = document.getElementById(selectId); $$('.anBox').forEach(x => x.remove());
+  const box = document.createElement('div'); box.className = 'addrow anBox'; box.id = 'anBox';
+  box.innerHTML = `<input class="in" id="anVal" placeholder="New ${esc(list).toLowerCase()}" aria-label="New ${esc(list)}"><button class="btn sm pri" data-act="anSave" data-l="${esc(list)}" data-s="${esc(selectId)}">Add</button><button class="btn sm" data-act="anCancel">Cancel</button>`;
+  if (sel) (sel.closest('label') || sel).insertAdjacentElement('afterend', box); else if ($('#layer .modal')) $('#layer .modal').appendChild(box); else return layer(`<h2>Add new: ${esc(list)}</h2>`) , $('#layer .modal').appendChild(box);
+  const i = $('#anVal'); i.focus(); i.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); box.querySelector('[data-act="anSave"]').click(); } if (ev.key === 'Escape') box.remove(); };
+};
+ACT.anSave = el => {
+  const v = ($('#anVal') || {}).value ? $('#anVal').value.trim() : '', l = el.dataset.l; if (!v) { toast('Type the new value.'); return; }
+  K.reg[l] = K.reg[l] || []; if (!K.reg[l].includes(v)) K.reg[l].push(v); save('reg');
+  $$(`select[data-list="${CSS.escape(l)}"]`).forEach(s => { if (![...s.options].some(o => o.value === v)) { const o = document.createElement('option'); o.value = v; o.textContent = v; s.insertBefore(o, s.querySelector('option[value="__add"]')); } });
+  const s = document.getElementById(el.dataset.s); $$('.anBox').forEach(x => x.remove());
+  if (s) { s.value = v; s.dispatchEvent(new Event('change', { bubbles: true })); }
+  toast(`Added “${v}” to ${l}. It shows in every dropdown and filter now.`);
+};
+ACT.anCancel = () => $$('.anBox').forEach(x => x.remove());
+
+// 2) every account dropdown gets “+ Add a new account…”
+function addAcctOptions() {
+  const ids = new Set(K.acc.map(a => a.id));
+  $$('select').forEach(s => { if (s.dataset.list || s.id === 'acMergeTo' || s.closest('#layer') || s.querySelector('option[value="__acct"]')) return; if (![...s.options].some(o => ids.has(o.value))) return; const o = document.createElement('option'); o.value = '__acct'; o.textContent = '+ Add a new account…'; s.appendChild(o); });
+}
+let AA = null; new MutationObserver(() => { clearTimeout(AA); AA = setTimeout(addAcctOptions, 40); }).observe(document.body, { childList: true, subtree: true });
+document.addEventListener('change', ev => {
+  const s = ev.target; if (s.tagName !== 'SELECT' || s.value !== '__acct') return; ev.stopImmediatePropagation();
+  s.value = s.dataset.prev || (s.options[0] && s.options[0].value) || ''; S.afterAcct = s.id || null; acctModal(null);
+}, true);
+document.addEventListener('focusin', ev => { if (ev.target.tagName === 'SELECT') ev.target.dataset.prev = ev.target.value; });
+const _acSave = ACT.acSave;
+ACT.acSave = el => {
+  const n = K.acc.length, want = S.afterAcct; _acSave(el);
+  if (want && K.acc.length > n) { const a = K.acc[K.acc.length - 1]; S.afterAcct = null; setTimeout(() => { addAcctOptions(); const s = document.getElementById(want); if (s) { if (![...s.options].some(o => o.value === a.id)) { const o = document.createElement('option'); o.value = a.id; o.textContent = a.name; s.insertBefore(o, s.querySelector('option[value="__acct"]')); } s.value = a.id; s.dispatchEvent(new Event('change', { bubbles: true })); } }, 80); }
+};
+
+// 3) tick-lists (people in the split, sites of an account) get “+ Add”
+function chipAddBtn(list, cls) { return `<button type="button" class="chip addchip" data-act="chipAdd" data-l="${esc(list)}" data-c="${esc(cls)}">+ Add ${esc(list === 'Person' ? 'person' : list.toLowerCase())}</button>`; }
+ACT.chipAdd = el => {
+  $$('.anBox').forEach(x => x.remove()); const box = document.createElement('div'); box.className = 'addrow anBox';
+  box.innerHTML = `<input class="in" id="chipVal" placeholder="New ${esc(el.dataset.l === 'Person' ? 'person, e.g. Ali (VA)' : el.dataset.l.toLowerCase())}"><button class="btn sm pri" id="chipOk">Add</button><button class="btn sm" data-act="anCancel">Cancel</button>`;
+  el.closest('.chips').insertAdjacentElement('afterend', box); const i = $('#chipVal'); i.focus();
+  const ok = () => { const v = i.value.trim(); if (!v) return; const l = el.dataset.l; K.reg[l] = K.reg[l] || []; if (!K.reg[l].includes(v)) K.reg[l].push(v); save('reg');
+    const c = document.createElement('label'); c.className = 'chip on'; c.innerHTML = `<input type="checkbox" class="${esc(el.dataset.c)}" value="${esc(v)}" checked hidden>${esc(v)}`; el.before(c); box.remove();
+    if ($('#spEd')) { S.sp = splitEditorReadDOM(); $('#spEd').innerHTML = splitEditorHTML(); } toast(`Added “${v}” to ${l}.`); };
+  $('#chipOk').onclick = ok; i.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); ok(); } };
+};
+const _seh = splitEditorHTML;
+splitEditorHTML = function () { let h = _seh(); (S.sp || []).forEach((r, i) => { h = h.replace(new RegExp(`(<div class="chips" style="margin-top:6px">(?:(?!</div>).)*?class="sp_who_${i}"(?:(?!</div>).)*)</div>`), `$1${chipAddBtn('Person', 'sp_who_' + i)}</div>`); }); return h; };
+const _acctModal = acctModal;
+acctModal = function (id) { _acctModal(id); try { const c = $('#layer .acSite') && $('#layer .acSite').closest('.chips'); if (c && !c.querySelector('.addchip')) c.insertAdjacentHTML('beforeend', chipAddBtn('Site', 'acSite')); } catch (e) { } };
+Object.assign(HELPT, { anSave: 'Adds the new value. It shows at once in every dropdown and filter of that list.', anCancel: 'Closes this without adding.', chipAdd: 'Adds a new value to this list and ticks it.' });
 </script>
 </body></html>
