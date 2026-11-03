@@ -132,6 +132,34 @@ label.chip{cursor:pointer}
 @media (max-width:880px){.nb{width:30px;height:34px;font-size:14px}.navbtns{gap:1px}}
 html.phone .toast{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
 .hide{display:none!important}.li.click{cursor:pointer}
+/* v1.7 logo, watermark, grouped menu, next bar, help */
+.brand{gap:10px}.brand .lg{width:30px;height:30px;display:inline-block;flex:none}.brand .lg svg,.slogo svg,.hp-t .lg svg{width:100%;height:100%;display:block}
+#wm{position:fixed;left:calc(50% + 105px);top:56%;width:min(44vw,500px);aspect-ratio:1;transform:translate(-50%,-50%);opacity:.05;pointer-events:none;z-index:1;filter:grayscale(.2)}
+#wm svg{width:100%;height:100%}
+html.phone #wm{left:50%;width:70vw}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) #wm{opacity:.07}}
+@keyframes adspin{to{transform:rotate(360deg)}}
+html.adbusy .brand .lg,html.adbusy .slogo{animation:adspin 1.1s linear infinite}
+html.adbusy #wm{animation:adspin 6s linear infinite;opacity:.07}
+@keyframes adspin2{to{transform:translate(-50%,-50%) rotate(360deg)}}
+html.adbusy #wm{animation:adspin2 6s linear infinite}
+.search{position:relative}.slogo{position:absolute;left:9px;top:50%;margin-top:-9px;width:18px;height:18px;opacity:.75;pointer-events:none;z-index:2}
+.search input#gq{padding-left:34px!important}
+.navrow{display:flex;align-items:center;gap:2px}.navrow .nav{flex:1;text-decoration:none}.navrow.sub .nav{padding-left:34px;font-size:13.5px}
+.nw{opacity:0;padding:4px 7px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:12px}.navrow:hover .nw,.nw:focus{opacity:1}.nw:hover{background:var(--soft);color:var(--accent)}
+html.phone .nw{opacity:.7}
+.nav.grp{width:100%}.nav.grp.here{color:var(--ink);font-weight:650}.nav .car{margin-left:auto;font-size:11px;color:var(--muted)}
+.crumbs .nw{opacity:.7;margin-left:6px}
+.nextbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:10px;padding:10px 12px;margin:10px 0 12px;position:relative;z-index:2}
+.nextbar.ok{background:var(--ok-soft);border-color:color-mix(in srgb,var(--ok) 30%,transparent)}
+.nextbar .row{gap:6px;flex-wrap:wrap}
+#helppop{position:fixed;z-index:200;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:12px}
+.hp-t{display:flex;gap:8px;align-items:flex-start;line-height:1.4}.hp-t .lg{width:22px;height:22px;flex:none}
+html.helpon [data-act],html.helpon [data-go],html.helpon select{cursor:help}
+html.helpon #helpBtn{box-shadow:0 0 0 3px var(--warn-soft)}
+#view,.top{position:relative;z-index:2}
+.card{position:relative}
+html.phone .nextbar .grow{flex:1 1 calc(100% - 44px)}html.phone .nextbar>.row{flex-basis:100%;justify-content:flex-end}
 
 html.phone .app{grid-template-columns:1fr}
 html.phone .rail{display:none}
@@ -828,7 +856,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '1.6.0';
+const APPV = '1.7.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -884,6 +912,7 @@ const DEFAULT_REG = {
   'Issue status': ['Open', 'In progress', 'Done', 'Ignored'],
   'Cost source': ['VA sheet', 'Stock cost list', 'Stock in', 'Card / bank statement', 'AliExpress export'],
   'Expense category': ['VA salary', 'Software / tools', 'Packaging', 'Own shipping labels', 'Store subscription', 'Warehouse', 'Other'],
+  'Split role': ['Owner', 'VA', 'Investor', 'Handler'],
   Person: ['Muhammad Aashiq (Owner)', 'Omer Khan (Partner)', 'Sajjad Sheikh (Partner)', 'Waqas (VA)', 'Ahsan (VA)', 'Junaid (VA)', 'Touqeer (VA)'],
   Supplier: ['AliExpress', 'CJ Dropshipping', 'China supplier', 'UK wholesaler'],
   'VAT status': ['Not VAT registered', 'VAT registered (standard)', 'VAT registered (flat rate)'],
@@ -1018,9 +1047,29 @@ function bestGuessAcct(kind) {
   K.acc.forEach(a => { const m = latestMonth(a.id) || ''; if (m > bm) { bm = m; best = a.id; } });
   return best;
 }
-// VA share of profit: % set on the account (Accounts → Edit → VA share). Only on a profit; a loss gives no share.
-function vaPct(a) { const v = a ? a.vaPct : null; return v === '' || v == null || isNaN(+v) ? 0 : +v; }
-function vaShareOf(a, profit, lock) { const pc = lock && lock.vaPct != null ? +lock.vaPct : vaPct(a); if (!pc || !(profit > 0)) return 0; return Math.round(profit * pc / 100); }
+// Profit split per account: rows of { role, who: [people], how: 'pct' (of profit) | 'left' (of what is left after the rows above) | 'fixed' (£ a month, e.g. rent), v }
+// % rows give nothing on a loss; a fixed amount (rent) is paid every month. Several people in one row share it equally.
+function splitRows(a, lock) {
+  if (lock && Array.isArray(lock.split)) return lock.split;
+  if (lock && lock.vaPct != null && !(a && a.split)) return +lock.vaPct ? [{ role: 'VA', who: [lock.va || (a && a.va) || 'VA'], how: 'pct', v: +lock.vaPct }] : [];
+  if (!a) return [];
+  if (Array.isArray(a.split)) return a.split;
+  const v = a.vaPct; return v === '' || v == null || isNaN(+v) || !+v ? [] : [{ role: 'VA', who: [a.va || 'VA'], how: 'pct', v: +v }];
+}
+function splitCalc(a, profit, lock) {
+  const rows = splitRows(a, lock); let left = profit; const out = [];
+  rows.forEach(r => {
+    const v = +r.v || 0; let amt = 0;
+    if (r.how === 'fixed') amt = Math.round(v * 100);
+    else if (profit > 0) amt = Math.round((r.how === 'left' ? Math.max(0, left) : profit) * v / 100);
+    left -= amt; const who = (r.who && r.who.length ? r.who : [r.role || 'Someone']);
+    out.push({ role: r.role || '', who, how: r.how, v, amt, each: who.map((w, i) => ({ who: w, amt: Math.floor(amt / who.length) + (i < amt % who.length ? 1 : 0) })) });
+  });
+  return { rows: out, total: profit - left, left };
+}
+const splitLabel = r => `${r.role}${r.who && r.who.length ? ' (' + r.who.join(', ') + ')' : ''} ${r.how === 'fixed' ? '£' + r.v + ' a month' : r.v + '%' + (r.how === 'left' ? ' of what is left' : '')}`;
+function vaPct(a) { return splitRows(a).length ? 1 : 0; }
+function vaShareOf(a, profit, lock) { return splitCalc(a, profit, lock).total; }
 function latestMonth(acctId) { const m = FILES.flatMap(f => f.parts).filter(q => q.acct === acctId && q.kind === 'ebay_txn').map(q => q.month).sort(); return m[m.length - 1] || null; }
 // re-place files that were waiting for their account (runs after every new file)
 // tabs of the same workbook belong to the same account
@@ -1405,7 +1454,7 @@ V.home = () => {
    <div class="bar" style="margin:10px 0"><i style="width:${Math.round(100 * done / g.S.length)}%"></i></div>
    ${g.next ? `<div class="li" style="border:0;padding:0"><div class="ic i-warn">→</div><div class="grow"><div class="t">Next: ${esc(g.next.t)}</div><div class="d">${esc(g.next.how[0])}</div></div></div><div class="row" style="margin-top:8px">${g.next.kind ? (typeof DRV !== 'undefined' && DRV.mcp ? `<span class="pill p-acc">⟳ watching Drive for it</span>` : `<button class="btn sm" data-act="pick" data-acct="${a.id}" data-month="${m}">Add by hand</button>`) : ''}<button class="btn sm" data-act="goAudit" data-acct="${a.id}" data-month="${m}">Open audit</button></div>` : `<div class="check">✓ ${MLL(m)} is complete</div>`}
    ${older.length ? `<div class="note" style="margin-top:8px">Also not locked yet: ${older.map(x => `<button class="btn sm" data-act="goAudit" data-acct="${a.id}" data-month="${x}">${ML(x)}</button>`).join(' ')}</div>` : ''}
-   ${g.A && g.A.sums ? `<div class="calc" style="margin-top:10px"><span class="l">eBay net</span>${money(g.A.sums.net)}<span class="l">Profit</span>${g.A.nCostMissing ? `<span class="num">${fmt(g.A.profit)} <small class="note">(${g.A.nCostMissing} costs missing)</small></span>` : money(g.A.profit)}${vaPct(g.a) ? `<span class="l">VA share (${esc(g.a.va || 'VA')} ${vaPct(g.a)}%)</span>${money(-vaShareOf(g.a, g.A.profit, K.locks[g.a.id + '|' + m]))}<span class="l">Profit after VA share</span>${money(g.A.profit - vaShareOf(g.a, g.A.profit, K.locks[g.a.id + '|' + m]))}` : ''}</div>` : ''}
+   ${g.A && g.A.sums ? `<div class="calc" style="margin-top:10px"><span class="l">eBay net</span>${money(g.A.sums.net)}<span class="l">Profit</span>${g.A.nCostMissing ? `<span class="num">${fmt(g.A.profit)} <small class="note">(${g.A.nCostMissing} costs missing)</small></span>` : money(g.A.profit)}${splitCalcLines(g.a, g.A.profit, K.locks[g.a.id + '|' + m])}</div>` : ''}
   </div>`).join('')}</div>
   ${iss.length ? `<div class="card"><div class="row between"><h2>Most important open issues</h2><button class="btn sm" data-go="issues">All ${iss.length}</button></div><div class="list">${groupIssues(iss).slice(0, 8).map(g => `<div class="li"><div class="ic i-${g.sev}">${ic(g.sev)}</div><div class="grow"><div class="t">${esc(g.acct)} · ${esc(g.label)} · ${esc(g.kind)}${g.n > 1 ? ` (${g.n})` : ''}</div><div class="d">${esc(g.next)}</div></div>${g.amt ? money(g.amt) : ''}</div>`).join('')}</div></div>` : ''}`;
 };
@@ -1475,7 +1524,7 @@ T.summary = (a, m, A) => {
   const checks = [[A.netFail === 0, `eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}`], [Math.abs(A.cash.diff) <= 1, `Cash balances: difference ${fmt(A.cash.diff)}`], [Math.abs(A.plCheck) <= 50, `Profit & loss ties to eBay net${A.plCheck ? ` (${fmt(A.plCheck)} currency rounding)` : ''}`], [!A.orMatch || A.orMatch.pct === 100, A.orMatch ? `Orders report matches ${A.orMatch.pct}% (${A.orMatch.inOr} orders)` : 'Orders report not uploaded yet'], [!A.nCostMissing, A.nCostMissing ? `${A.nCostMissing} orders have no cost yet` : `Cost found for all ${A.costKnown} orders`]];
   if (A.payMatch) checks.push([A.payMatch.found === A.payMatch.total, `Payouts found in bank: ${A.payMatch.found} of ${A.payMatch.total}`]);
   if (A.aeMatch) checks.push([A.aeMatch.hit === A.aeMatch.tried, `AliExpress costs found on card / bank: ${A.aeMatch.hit} of ${A.aeMatch.tried}`]);
-  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${vaPct(a) ? `<div class="card tile"><div class="k">VA share · ${esc(a.va || 'VA')} ${vaPct(a)}% ${help('Profit × the VA share set on the account (Accounts → Edit). A loss gives no share.')}</div><div class="v">${fmt(vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))}</div></div><div class="card tile hi"><div class="k">Profit after VA share</div><div class="v">${fmt(A.profit - vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))}</div></div>` : ''}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
+  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m])}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
   ${A.nCostMissing ? `<div class="check w">Profit is not final: ${A.nCostMissing} orders have no cost. <button class="btn sm" data-act="ofl" data-v="No cost found">Show them</button></div>` : ''}
   <div class="card"><h2>Checks</h2><div class="list">${checks.map(([ok, t]) => `<div class="li"><div class="ic i-${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'}</div><div class="grow">${esc(t)}</div></div>`).join('')}</div></div>`;
 };
@@ -1552,13 +1601,13 @@ function allAudits() { const L = []; K.acc.filter(accPass).forEach(a => auditMon
 V.held = () => { const L = allAudits().filter(x => x.A.cash.held); const tot = L.reduce((s, x) => s + x.A.cash.held, 0); return `<h1>Held money</h1><p class="sub">Money eBay kept back at the time the report was downloaded. Download that month’s report again after delivery to see it paid.</p><div class="grid"><div class="card tile"><div class="k">Total held</div><div class="v">${fmt(tot)}</div></div></div><div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">Orders</th><th class="r">Held</th><th></th></tr></thead><tbody>${L.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r num">${Object.keys(x.A.cash.heldOrders).length}</td><td class="r">${money(x.A.cash.held)}</td><td><button class="btn sm" data-act="pick" data-acct="${x.a.id}" data-month="${x.m}">Upload newer report</button></td></tr>`).join('') || '<tr><td colspan="5" class="note">Nothing held. ✓</td></tr>'}</tbody></table></div></div>`; };
 V.health = () => { const L = allAudits(); return `<h1>Account health</h1><p class="sub">Warning signs per month. Red means act now.</p><div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">Held %</th><th class="r">Refund rate</th><th class="r">Ads % of sales</th><th class="r">INAD fee</th><th class="r">Below Standard fee</th></tr></thead><tbody>${L.map(({ a, m, A }) => { const h = A.health; const c = (v, w, b) => v >= b ? 'p-bad' : v >= w ? 'p-warn' : 'p-ok'; return `<tr><td>${esc(a.name)}</td><td>${MLL(m)}</td><td class="r"><span class="pill ${c(h.heldPct, 10, 30)}">${h.heldPct}%</span></td><td class="r"><span class="pill ${c(h.refundRate, 5, 10)}">${h.refundRate}%</span></td><td class="r"><span class="pill ${c(h.adsPct, 8, 15)}">${h.adsPct}%</span></td><td class="r">${h.inad ? `<span class="pill p-bad">${fmt(h.inad)}</span>` : pill('none', 'ok')}</td><td class="r">${h.below ? `<span class="pill p-bad">${fmt(h.below)}</span>` : pill('none', 'ok')}</td></tr>`; }).join('') || '<tr><td colspan="7" class="note">No audits yet.</td></tr>'}</tbody></table></div></div>`; };
 V.trend = () => {
-  const L = allAudits(); const byM = {}; const VAx = {}; const vaAdd = (a, m, profit, lock) => { const sh = vaShareOf(a, profit, lock); byM[m].va += sh; if (!vaPct(a) && !(lock && lock.vaPct)) return; const who = (lock && lock.va) || a.va || 'VA not set', r = VAx[who + '|' + m] = VAx[who + '|' + m] || { who, m, accts: [], profit: 0, share: 0 }; r.accts.push(`${a.name} ${(lock && lock.vaPct != null ? lock.vaPct : vaPct(a))}%`); r.profit += profit; r.share += sh; };
+  const L = allAudits(); const byM = {}; const VAx = {}; const vaAdd = (a, m, profit, lock) => { const c = splitCalc(a, profit, lock); byM[m].va += c.total; c.rows.forEach(r => r.each.forEach(e => { const key = e.who + '|' + r.role + '|' + m, x = VAx[key] = VAx[key] || { who: e.who, role: r.role, m, accts: [], profit: 0, share: 0 }; x.accts.push(`${a.name} ${r.how === 'fixed' ? '£' + r.v : r.v + '%'}`); x.profit += profit; x.share += e.amt; })); };
   L.forEach(({ a, m, A }) => { const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0, va: 0 }; x.net += A.sums.net; x.cogs += A.cogs; x.profit += A.profit; x.gross += A.sums.gross; vaAdd(a, m, A.profit, K.locks[a.id + '|' + m]); });
   Object.entries(K.history).forEach(([k, h]) => { const m = k.split('|')[1]; const ha = acctById(k.split('|')[0]); if (!ha || !accPass(ha) || !monthPass(m)) return; const x = byM[m] = byM[m] || { net: 0, cogs: 0, profit: 0, gross: 0, va: 0 }; if (!L.some(l => l.m === m && l.a.id === k.split('|')[0])) { x.net += h.net; x.cogs += h.cogs; x.profit += h.profit; x.gross += h.gross; vaAdd(ha, m, h.profit, h); } });
   const ms = Object.keys(byM).sort(); const max = Math.max(1, ...ms.map(m => Math.max(byM[m].gross, byM[m].net)));
   return `<h1>Trend</h1><p class="sub">Accounts in the filter, month by month.</p><div class="card"><div class="tbars">${ms.map(m => { const x = byM[m]; return `<div class="tb"><div class="tbc"><i style="height:${Math.max(2, 100 * x.gross / max)}%;background:var(--line)" title="Sales ${fmt(x.gross)}"></i><i style="height:${Math.max(2, 100 * x.net / max)}%;background:var(--accent)" title="eBay net ${fmt(x.net)}"></i><i style="height:${Math.max(2, 100 * Math.max(0, x.profit) / max)}%;background:var(--ok)" title="Profit ${fmt(x.profit)}"></i></div><div class="note">${ML(m)}</div></div>`; }).join('') || '<p class="note">No audits yet.</p>'}</div><div class="row note"><span><i class="lg" style="background:var(--line)"></i>Sales</span><span><i class="lg" style="background:var(--accent)"></i>eBay net</span><span><i class="lg" style="background:var(--ok)"></i>Profit</span></div></div>
-  <div class="card"><div class="tw"><table><thead><tr><th>Month</th><th class="r">Sales</th><th class="r">eBay net</th><th class="r">Cost of goods</th><th class="r">Profit</th><th class="r">VA share</th><th class="r">After VA share</th></tr></thead><tbody>${ms.map(m => `<tr><td>${MLL(m)}</td><td class="r">${money(byM[m].gross)}</td><td class="r">${money(byM[m].net)}</td><td class="r">${money(byM[m].cogs)}</td><td class="r">${money(byM[m].profit)}</td><td class="r">${money(-byM[m].va)}</td><td class="r">${money(byM[m].profit - byM[m].va)}</td></tr>`).join('')}</tbody></table></div></div>
-  <div class="card"><h2>VA shares ${help('Each account has its VA and the VA share in % (Accounts → Edit). Share = profit × %. A month with a loss gives no share.')}</h2>${Object.keys(VAx).length ? `<div class="tw"><table><thead><tr><th>VA</th><th>Month</th><th>Accounts</th><th class="r">Profit</th><th class="r">VA share</th></tr></thead><tbody>${Object.values(VAx).sort((x, y) => y.m.localeCompare(x.m) || x.who.localeCompare(y.who)).map(r => `<tr><td>${esc(r.who)}</td><td>${MLL(r.m)}</td><td class="note">${esc(r.accts.join(', '))}</td><td class="r">${money(r.profit)}</td><td class="r"><b>${money(r.share)}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="note">No VA share set yet. Set it once per account: Accounts → Edit → “VA share of profit (%)”.</p>'}</div>`;
+  <div class="card"><div class="tw"><table><thead><tr><th>Month</th><th class="r">Sales</th><th class="r">eBay net</th><th class="r">Cost of goods</th><th class="r">Profit</th><th class="r">Shares</th><th class="r">Left for you</th></tr></thead><tbody>${ms.map(m => `<tr><td>${MLL(m)}</td><td class="r">${money(byM[m].gross)}</td><td class="r">${money(byM[m].net)}</td><td class="r">${money(byM[m].cogs)}</td><td class="r">${money(byM[m].profit)}</td><td class="r">${money(-byM[m].va)}</td><td class="r">${money(byM[m].profit - byM[m].va)}</td></tr>`).join('')}</tbody></table></div></div>
+  <div class="card"><h2>Shares by person ${help('Each account has its split: Owner, VA, Investor, Handler (Accounts → Edit → Profit split). % rows give nothing in a month with a loss; a fixed amount such as rent is paid every month.')}</h2>${Object.keys(VAx).length ? `<div class="tw"><table><thead><tr><th>Person</th><th>Role</th><th>Month</th><th>Accounts</th><th class="r">Profit of those accounts</th><th class="r">Share</th></tr></thead><tbody>${Object.values(VAx).sort((x, y) => y.m.localeCompare(x.m) || x.who.localeCompare(y.who)).map(r => `<tr><td>${esc(r.who)}</td><td>${esc(r.role)}</td><td>${MLL(r.m)}</td><td class="note">${esc(r.accts.join(', '))}</td><td class="r">${money(r.profit)}</td><td class="r"><b>${money(r.share)}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="note">No split set yet. Set it once per account: Accounts → Edit → “Profit split”.</p>'}</div>`;
 };
 
 // ---------- STOCK ----------
@@ -1576,7 +1625,7 @@ V.stock = () => {
 V.history = () => {
   const H = Object.entries(K.history).map(([k, h]) => ({ k, a: acctById(k.split('|')[0]), m: k.split('|')[1], h })).filter(x => x.a && accPass(x.a) && monthPass(x.m)).sort((x, y) => y.m.localeCompare(x.m));
   return `<h1>History</h1><p class="sub">Only this month and last month stay in the main screens, so the tool stays fast. Older locked months move here automatically on the 1st${FS.root ? ', and their files move to the “Audits Archive” folder' : ''}.</p>
-  <div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">eBay net</th><th class="r">Profit</th><th class="r">VA share</th><th class="r">After VA share</th><th>Locked</th><th>Files</th><th></th></tr></thead><tbody>${H.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r">${money(x.h.net)}</td><td class="r">${money(x.h.profit)}</td><td class="r">${money(-vaShareOf(x.a, x.h.profit, x.h))}</td><td class="r">${money(x.h.profit - vaShareOf(x.a, x.h.profit, x.h))}</td><td class="note">${esc((x.h.lockedAt || '').slice(0, 10))}</td><td class="note">${(x.h.files || []).length} files${x.h.folder ? ` · ${esc(x.h.folder)}` : ''}</td><td class="row"><button class="btn sm" data-act="histOpen" data-k="${esc(x.k)}">Open</button><button class="btn sm" data-act="histBack" data-k="${esc(x.k)}">Move back</button></td></tr>`).join('') || '<tr><td colspan="9" class="note">Nothing in History yet. Locked months older than last month move here.</td></tr>'}</tbody></table></div></div>`;
+  <div class="card"><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">eBay net</th><th class="r">Profit</th><th class="r">Shares</th><th class="r">Left for you</th><th>Locked</th><th>Files</th><th></th></tr></thead><tbody>${H.map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r">${money(x.h.net)}</td><td class="r">${money(x.h.profit)}</td><td class="r">${money(-vaShareOf(x.a, x.h.profit, x.h))}</td><td class="r">${money(x.h.profit - vaShareOf(x.a, x.h.profit, x.h))}</td><td class="note">${esc((x.h.lockedAt || '').slice(0, 10))}</td><td class="note">${(x.h.files || []).length} files${x.h.folder ? ` · ${esc(x.h.folder)}` : ''}</td><td class="row"><button class="btn sm" data-act="histOpen" data-k="${esc(x.k)}">Open</button><button class="btn sm" data-act="histBack" data-k="${esc(x.k)}">Move back</button></td></tr>`).join('') || '<tr><td colspan="9" class="note">Nothing in History yet. Locked months older than last month move here.</td></tr>'}</tbody></table></div></div>`;
 };
 
 // ---------- REGISTER ----------
@@ -1588,7 +1637,7 @@ V.register = () => {
   ${S.list === '__acc' ? accountsEditor() : S.list === '__fields' ? fieldsEditor() : `<div class="card"><div class="row"><input class="in" id="regadd" placeholder="Add to ${esc(S.list)}…" style="flex:1"><button class="btn pri" data-act="regAdd">Add</button></div><div class="list" style="margin-top:8px">${L.map((v, i) => `<div class="li"><div class="grow"><input class="in" value="${esc(v)}" data-act="regRen" data-l="${esc(S.list)}" data-i="${i}" aria-label="Rename" style="width:100%"></div><button class="btn sm" data-act="regDel" data-i="${i}">Remove</button></div>`).join('')}</div></div>`}`;
 };
 function accountsEditor() {
-  return `<div class="card"><div class="row between"><h2>Accounts (${K.acc.length})</h2><button class="btn pri" data-act="addAcct">+ Add account</button></div><div class="tw"><table><thead><tr><th>Name</th><th>Seller ID</th><th>Other names (aliases)</th><th>Team</th><th>Company</th><th>Platform</th><th>Type</th><th>VA</th><th class="r">VA share</th><th>VAT</th><th></th></tr></thead><tbody>${K.acc.map(a => `<tr><td>${esc(a.name)}${a.isNew ? ' ' + pill('new', 'warn') : ''}</td><td class="num">${esc(a.seller)}</td><td>${esc((a.aliases || []).join(', '))}</td><td>${esc(a.Team)}</td><td>${esc(a.Company)}</td><td>${esc(a.Platform)}</td><td>${esc(a.type)}</td><td>${esc(a.va)}</td><td class="r">${vaPct(a) ? vaPct(a) + '%' : '–'}</td><td class="note">${esc(a.vat)}</td><td><button class="btn sm" data-act="editAcct" data-id="${a.id}">Edit</button></td></tr>`).join('')}</tbody></table></div></div>`;
+  return `<div class="card"><div class="row between"><h2>Accounts (${K.acc.length})</h2><button class="btn pri" data-act="addAcct">+ Add account</button></div><div class="tw"><table><thead><tr><th>Name</th><th>Seller ID</th><th>Other names (aliases)</th><th>Team</th><th>Company</th><th>Platform</th><th>Type</th><th>VA</th><th>Profit split</th><th>VAT</th><th></th></tr></thead><tbody>${K.acc.map(a => `<tr><td>${esc(a.name)}${a.isNew ? ' ' + pill('new', 'warn') : ''}</td><td class="num">${esc(a.seller)}</td><td>${esc((a.aliases || []).join(', '))}</td><td>${esc(a.Team)}</td><td>${esc(a.Company)}</td><td>${esc(a.Platform)}</td><td>${esc(a.type)}</td><td>${esc(a.va)}</td><td class="note">${splitRows(a).map(r => esc(splitLabel(r))).join('<br>') || '–'}</td><td class="note">${esc(a.vat)}</td><td><button class="btn sm" data-act="editAcct" data-id="${a.id}">Edit</button></td></tr>`).join('')}</tbody></table></div></div>`;
 }
 function fieldsEditor() {
   return `<div class="card"><h2>Add a field</h2><div class="form"><label>Field name<input id="fName" placeholder="e.g. Warehouse"></label><label>Type${dd('fType', null, 'Dropdown', ['Text', 'Number', 'Date', 'Dropdown', 'Multi-select'])}</label><label>Used on${dd('fOn', null, 'Accounts', ['Accounts', 'Issues'])}</label><label>Options (for dropdowns, comma separated)<input id="fOpts" placeholder="e.g. Manchester, London"></label></div><div class="row" style="margin-top:8px"><button class="btn pri" data-act="fAdd">Add field</button></div><p class="note">Dropdown fields appear in “More filters” at once.</p></div>
@@ -1666,8 +1715,9 @@ function newAuditModal() {
 }
 function acctModal(id) {
   const a = id ? acctById(id) : { id: '', name: '', seller: '', aliases: [], Team: K.reg.Team[0] || '', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Dropship', va: '', vat: 'Not VAT registered', cf: {} };
-  layer(`<h2>${id ? 'Edit account' : 'Add account'}</h2><div class="form"><label>Name<input id="acName" value="${esc(a.name)}"></label><label>Seller ID (from eBay reports)<input id="acSeller" value="${esc(a.seller)}" placeholder="e.g. bizmart-uk"></label><label>Other names (aliases, comma separated)<input id="acAl" value="${esc((a.aliases || []).join(', '))}" placeholder="e.g. TOUQEER, BAY-191"></label><label>Team${dd('acTeam', 'Team', a.Team, ['', ...K.reg.Team])}</label><label>Company${dd('acCo', 'Company', a.Company, ['', ...K.reg.Company])}</label><label>Platform${dd('acPl', 'Platform', a.Platform)}</label><label>Type${dd('acType', 'Account type', a.type)}</label><label>VA${dd('acVA', 'Person', a.va, ['', ...K.reg.Person])}</label><label>VA share of profit (%)<input id="acPct" type="number" inputmode="decimal" min="0" max="100" step="0.5" value="${esc(a.vaPct ?? '')}" placeholder="e.g. 20"></label><label>VAT status${dd('acVat', 'VAT status', a.vat)}</label></div>
+  layer(`<h2>${id ? 'Edit account' : 'Add account'}</h2><div class="form"><label>Name<input id="acName" value="${esc(a.name)}"></label><label>Seller ID (from eBay reports)<input id="acSeller" value="${esc(a.seller)}" placeholder="e.g. bizmart-uk"></label><label>Other names (aliases, comma separated)<input id="acAl" value="${esc((a.aliases || []).join(', '))}" placeholder="e.g. TOUQEER, BAY-191"></label><label>Team${dd('acTeam', 'Team', a.Team, ['', ...K.reg.Team])}</label><label>Company${dd('acCo', 'Company', a.Company, ['', ...K.reg.Company])}</label><label>Platform${dd('acPl', 'Platform', a.Platform)}</label><label>Type${dd('acType', 'Account type', a.type)}</label><label>VA${dd('acVA', 'Person', a.va, ['', ...K.reg.Person])}</label><label>VAT status${dd('acVat', 'VAT status', a.vat)}</label></div>
   <div><div class="note">Sites</div><div class="chips">${K.reg.Site.map(s => `<label class="chip ${(a.Site || []).includes(s) ? 'on' : ''}"><input type="checkbox" class="acSite" value="${esc(s)}" ${(a.Site || []).includes(s) ? 'checked' : ''} hidden>${esc(s)}</label>`).join('')}</div></div>
+  ${splitEditorStart(a)}
   ${K.fields.filter(f => f.on === 'Accounts').map(f => `<label class="note">${esc(f.name)}<br>${fieldInput('acf_' + f.name, f, (a.cf || {})[f.name])}</label>`).join('')}
   <div class="row"><button class="btn pri" data-act="acSave" data-id="${esc(id || '')}">Save</button>${id && K.acc.length > 1 ? `<span class="row"><select class="in" id="acMergeTo" aria-label="Merge into">${K.acc.filter(x => x.id !== id).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select><button class="btn" data-act="acMerge" data-id="${esc(id)}">Merge into…</button></span>` : ''}${id ? `<button class="btn" data-act="acDel" data-id="${esc(id)}">Remove account</button>` : ''}<button class="btn" data-act="close">Cancel</button></div>`);
 }
@@ -1720,7 +1770,7 @@ function weeklyMessage() {
 function skuSales(A) { const s = {}; const txn = activeParts('ebay_txn').find(p => p.acct === S.acct && p.month === S.month && !p.replacedBy); if (txn) txn.lines.forEach(l => { if (l.type === 'Order' && l.item && l.sku && /^B-/i.test(l.sku)) s[l.sku] = (s[l.sku] || 0) + (l.qty || 0); }); return s; }
 async function doLock(note) {
   const A = getAudit(S.acct, S.month); const k = S.acct + '|' + S.month;
-  K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, va: acctById(S.acct) ? acctById(S.acct).va : '', vaPct: vaPct(acctById(S.acct)), vaShare: vaShareOf(acctById(S.acct), A.profit), cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
+  K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, split: JSON.parse(JSON.stringify(splitRows(acctById(S.acct)))), shares: splitCalc(acctById(S.acct), A.profit).total, cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
   await save('locks'); log(`Locked ${acctById(S.acct).name} ${S.month}`);
   if (FS.root) { try { await fsWriteReport(acctById(S.acct), S.month, A); } catch (e) { logErr(e, 'write report'); } }
   await archiveOld(); invalidate();
@@ -1793,7 +1843,7 @@ async function fsArchiveMonth(a, m) {
 // ---------- Excel report ----------
 function workbook(a, m, A) {
   const X = XLSX.utils, wb = X.book_new(), p = v => v == null ? '' : Math.round(v) / 100, z = k => A.sums[k] || 0;
-  const sum = [['Audit Desk report'], ['Account', a.name], ['Seller ID', a.seller], ['Month', MLL(m)], ['Period in report', `${A.start || ''} to ${A.end || ''}`], ['Made on', new Date().toLocaleString('en-GB')], [], ['Sales (gross)', p(z('gross'))], ['eBay net', p(z('net'))], ['Cost of goods', p(A.cogs)], ['Profit', p(A.profit)], ...(vaPct(a) ? [[`VA share (${a.va || 'VA'} ${vaPct(a)}%)`, p(vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))], ['Profit after VA share', p(A.profit - vaShareOf(a, A.profit, K.locks[a.id + '|' + m]))]] : []), ['Orders', z('orders')], ['Units', z('units')], ['Held by eBay', p(A.cash.held)], ['Orders with no cost', A.nCostMissing], [], ['Checks'], ['eBay maths lines that do not add up', A.netFail], ['Cash difference', p(A.cash.diff)], ['P&L tie difference (currency rounding)', p(A.plCheck)], ['Orders report match %', A.orMatch ? A.orMatch.pct : 'no report']];
+  const sum = [['Audit Desk report'], ['Account', a.name], ['Seller ID', a.seller], ['Month', MLL(m)], ['Period in report', `${A.start || ''} to ${A.end || ''}`], ['Made on', new Date().toLocaleString('en-GB')], [], ['Sales (gross)', p(z('gross'))], ['eBay net', p(z('net'))], ['Cost of goods', p(A.cogs)], ['Profit', p(A.profit)], ...(() => { const c = splitCalc(a, A.profit, K.locks[a.id + '|' + m]); return c.rows.length ? [...c.rows.map(r => [splitLabel(r), p(r.amt)]), ['Left for you', p(c.left)]] : []; })(), ['Orders', z('orders')], ['Units', z('units')], ['Held by eBay', p(A.cash.held)], ['Orders with no cost', A.nCostMissing], [], ['Checks'], ['eBay maths lines that do not add up', A.netFail], ['Cash difference', p(A.cash.diff)], ['P&L tie difference (currency rounding)', p(A.plCheck)], ['Orders report match %', A.orMatch ? A.orMatch.pct : 'no report']];
   X.book_append_sheet(wb, X.aoa_to_sheet(sum), 'Summary');
   const pl = [['Line', 'Amount (£)'], ['Sales', p(z('gross'))], ['Refunds', p(z('refunds'))], ['Claims and disputes', p(z('claims') + z('disputes'))], ['Final value fees', p(-z('fvf'))], ['Regulatory operating fee', p(-z('reg'))], ['International fee', p(-z('intl'))], ['Item Not As Described fee', p(-z('inad'))], ['Below Standard fee', p(-z('below'))], ['Fee credits on refunds', p(z('feeCredits'))], ['Final value fee credits', p(z('fvfCreditStandalone'))], ['Insertion fees', p(-z('insertion'))], ['Promoted Listings fees', p(-z('ads'))], ['Promoted Listings credits', p(z('adsCredit'))], ['Store subscription', p(-z('subscription'))], ['Other account fees', p(-z('otherFees'))], ['Postage labels', p(-z('postage'))], ['Other lines', p(z('otherLines'))], ['eBay net', p(z('net'))], ['Cost of goods sold', p(-A.cogs)], ['Profit', p(A.profit)]];
   X.book_append_sheet(wb, X.aoa_to_sheet(pl), 'Profit & loss');
@@ -1890,7 +1940,7 @@ const ACT = {
   acSave: el => {
     const id = el.dataset.id; const name = $('#acName').value.trim(); if (!name) { toast('Please give the account a name.'); return; }
     const a = id ? acctById(id) : { id: 'a' + uid(), cf: {} };
-    Object.assign(a, { name, seller: $('#acSeller').value.trim(), aliases: $('#acAl').value.split(',').map(s => s.trim()).filter(Boolean), Team: $('#acTeam').value, Company: $('#acCo').value, Platform: $('#acPl').value, type: $('#acType').value, va: $('#acVA').value, vaPct: (() => { const v = $('#acPct').value.trim(); if (v !== '') return Math.min(100, Math.max(0, +v)); const o = K.acc.find(x => x.id !== id && x.va && x.va === $('#acVA').value && vaPct(x)); return o ? o.vaPct : ''; })(), vat: $('#acVat').value, Site: $$('.acSite').filter(c => c.checked).map(c => c.value), isNew: false });
+    Object.assign(a, { name, seller: $('#acSeller').value.trim(), aliases: $('#acAl').value.split(',').map(s => s.trim()).filter(Boolean), Team: $('#acTeam').value, Company: $('#acCo').value, Platform: $('#acPl').value, type: $('#acType').value, va: $('#acVA').value, split: splitEditorRead(), vat: $('#acVat').value, Site: $$('.acSite').filter(c => c.checked).map(c => c.value), isNew: false });
     a.cf = a.cf || {}; K.fields.filter(f => f.on === 'Accounts').forEach(f => a.cf[f.name] = readField('acf_' + f.name, f));
     if (!id) K.acc.push(a); save('acc');
     // re-place files with this seller id
@@ -2144,12 +2194,20 @@ async function driveSync(manual) {
   const seen = DRV.seen;
   let found = [], newOnes = 0; const out = [];
   try {
-    for (const r of roots()) {
+    for (const r of roots().filter(r => !DRV.only || r.id === DRV.only)) {
       // a root can be a folder or a single file (for example a Google Sheet)
       let meta = null; try { meta = pay(await gcall('get_file_metadata', { fileId: r.id, excludeContentSnippets: true })); } catch (e) { if (e && (e.code === 'tool_error')) { r.bad = true; continue; } throw e; }
+      const n0 = found.length;
       if (meta && meta.mimeType === 'application/vnd.google-apps.folder') await walkDrive(r.id, meta.title || r.name, found, 0);
       else if (meta && meta.id) found.push(Object.assign({ path: '' }, meta));
+      for (let i = n0; i < found.length; i++) found[i]._root = r;
       r.bad = false; if (meta && meta.title) r.title = meta.title; r.isFolder = !!(meta && meta.mimeType === 'application/vnd.google-apps.folder');
+    }
+    // whole Drive: audit files anywhere (spreadsheets / reports of the last 60 days, screenshots and statements by name)
+    if ((K.prefs.driveScope || 'some') === 'all' && !DRV.only) {
+      const since = new Date(Date.now() - 60 * 864e5).toISOString(); const have = new Set(found.map(f => f.id));
+      const qs = [`modifiedTime > '${since}' and (mimeType = 'text/csv' or mimeType contains 'spreadsheet' or mimeType contains 'excel')`, `modifiedTime > '${since}' and (mimeType contains 'image/' or mimeType = 'application/pdf') and (title contains 'creenshot' or title contains 'eller' or title contains 'tatement' or title contains 'Wise' or title contains 'ank' or title contains 'ebay' or title contains 'eBay' or title contains 'Payout')`];
+      for (const q of qs) { let tok = null, g = 0; do { const r = pay(await gcall('search_files', Object.assign({ query: q, pageSize: 200, excludeContentSnippets: true }, tok ? { pageToken: tok } : {}))); (r && r.files || []).forEach(f => { if (!have.has(f.id) && !/^Audit Desk data/.test(f.title)) { have.add(f.id); found.push(Object.assign({ path: '', _wide: true }, f)); } }); tok = r && (r.nextPageToken || r.next_page_token); } while (tok && ++g < 5); }
     }
     const todo = found.filter(f => seen[f.id] !== f.modifiedTime && !/^~\$/.test(f.title));
     DRV.total = todo.length; DRV.n = 0;
@@ -2168,14 +2226,15 @@ async function driveSync(manual) {
         if (old && AD.hash(bytes) === old.id) { seen[f.id] = f.modifiedTime; continue; }
         if (old) { FILES.splice(FILES.indexOf(old), 1); await DB.del('files', old.id); FILES.forEach(g => g.parts.forEach(q => { if (q.replacedBy === old.id) q.replacedBy = null; })); }
         const file = new File([bytes], name, { type: (ex && ex[0]) || f.mimeType || 'application/octet-stream' });
-        const res = await intake(file, old ? old.hint || {} : {}, f.path);
+        const res = await intake(file, old ? old.hint || {} : (f._root && f._root.acct ? { acct: f._root.acct } : {}), f.path);
+        if (f._wide && res.rec && !res.dup && res.rec.parts.every(p => ['unknown', 'stock_cost', 'market_sales', 'other_pic'].includes(p.kind) || p.notNeeded)) { const i = FILES.indexOf(res.rec); if (i > -1) FILES.splice(i, 1); await DB.del('files', res.rec.id).catch(() => { }); seen[f.id] = f.modifiedTime; DRV.skipped = (DRV.skipped || 0) + 1; continue; }
         if (res.rec) { res.rec.driveId = f.id; res.rec.driveUrl = f.viewUrl || ''; res.rec.driveParent = f.parentId || f._parent || ''; if (old) res.rec.parts.forEach(p => { const q = old.parts.find(x => x.sheet === p.sheet && x.placedBy === 'your choice'); if (q) { p.acct = q.acct; p.waiting = false; p.placedBy = 'your choice'; } const qm = old.parts.find(x => x.sheet === p.sheet && x.month && (x.kind === 'screenshot' || x.kind === 'pdf')); if (qm && (p.kind === 'screenshot' || p.kind === 'pdf')) p.month = qm.month; }); await DB.put('files', res.rec.id, res.rec); }
         out.push({ name, msgs: res.msgs, rec: res.rec }); newOnes++;
         seen[f.id] = f.modifiedTime;
       } catch (e) { logErr(e, 'drive file ' + f.title); out.push({ name: f.title, msgs: [{ t: 'warn', m: `Could not read it from Drive this time (${e.code || e.message}). The tool tries again on the next check.` }] }); }
     }
     try { const extra = await driveHunt(seen); if (extra.length) { out.push(...extra); newOnes += extra.length; } } catch (e) { logErr(e, 'drive hunt'); }
-    if (!roots().some(r => r.bad)) { const ids = new Set(found.map(f => f.id)); const gone = FILES.filter(f => f.driveId && !f._hist && !f.found && !f.handUp && !ids.has(f.driveId)); for (const g of gone) { FILES.splice(FILES.indexOf(g), 1); await DB.del('files', g.id); delete seen[g.driveId]; FILES.forEach(x => x.parts.forEach(q => { if (q.replacedBy === g.id) q.replacedBy = null; })); out.push({ name: g.name, msgs: [{ t: 'grey', m: 'This file was removed from Google Drive, so it was taken out of the audit too.' }] }); } }
+    if (!roots().some(r => r.bad) && !DRV.only) { const ids = new Set(found.map(f => f.id)); const gone = FILES.filter(f => f.driveId && !f._hist && !f.found && !f.handUp && !ids.has(f.driveId)); for (const g of gone) { FILES.splice(FILES.indexOf(g), 1); await DB.del('files', g.id); delete seen[g.driveId]; FILES.forEach(x => x.parts.forEach(q => { if (q.replacedBy === g.id) q.replacedBy = null; })); out.push({ name: g.name, msgs: [{ t: 'grey', m: 'This file was removed from Google Drive, so it was taken out of the audit too.' }] }); } }
     K.prefs.driveLast = new Date().toISOString(); K.prefs.driveFound = found.length;
     await DB.put('kv', 'driveSeen', seen).catch(() => { }); await save('prefs'); invalidate();
     if (out.length) S.results = out.concat(S.results).slice(0, 40);
@@ -2614,5 +2673,342 @@ function applyLayout() {
 }
 applyLayout(); window.addEventListener('resize', applyLayout);
 Object.assign(ACT, { layout: el => { try { localStorage.setItem('ad-layout', el.dataset.v); } catch (e) { } applyLayout(); render(); } });
+
+/* Audit Desk — profit split, grouped menu with links that open in a new window, logo and watermark,
+   help on every control, the "Next" bar that keeps the work moving, Drive folder picker, and an importer that takes anything. */
+'use strict';
+
+// ====================== logo ======================
+const LOGO_SVG = `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><linearGradient id="adlg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#173f78"/><stop offset="1" stop-color="#2a86cf"/></linearGradient></defs><rect width="64" height="64" rx="15" fill="url(#adlg)"/><path d="M17 11h19l10 10v27a4 4 0 0 1-4 4H17a4 4 0 0 1-4-4V15a4 4 0 0 1 4-4z" fill="#fff"/><path d="M36 11v10h10z" fill="#c9dcf3"/><rect x="19" y="23" width="13" height="3" rx="1.5" fill="#b5c7dc"/><rect x="19" y="29" width="9" height="3" rx="1.5" fill="#b5c7dc"/><path d="M19.5 39.5l4.5 4.5 8.5-9.5" fill="none" stroke="#17a05a" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="44" cy="42" r="8.2" fill="rgba(255,255,255,.25)" stroke="#ffb21f" stroke-width="4"/><path d="M50 48l6.5 6.5" stroke="#ffb21f" stroke-width="5" stroke-linecap="round"/></svg>`;
+const LOGO_URI = 'data:image/svg+xml,' + encodeURIComponent(LOGO_SVG);
+(function setIcon() { try { let l = document.querySelector('link[rel="icon"]'); if (!l) { l = document.createElement('link'); l.rel = 'icon'; document.head.appendChild(l); } l.type = 'image/svg+xml'; l.href = LOGO_URI; } catch (e) { } })();
+(function watermark() { const w = document.createElement('div'); w.id = 'wm'; w.setAttribute('aria-hidden', 'true'); w.innerHTML = LOGO_SVG; document.body.appendChild(w); })();
+// the logo turns while the tool is busy (Drive, reading pictures, uploading, searching)
+setInterval(() => { const busy = (typeof DRV !== 'undefined' && DRV.busy) || (typeof OCR !== 'undefined' && OCR.busy) || (typeof UPBUSY !== 'undefined' && UPBUSY) || Date.now() < (window.AD_SPIN || 0); document.documentElement.classList.toggle('adbusy', !!busy); }, 300);
+const spin = ms => { window.AD_SPIN = Date.now() + (ms || 700); document.documentElement.classList.add('adbusy'); };
+
+// ====================== profit split ======================
+function splitCalcLines(a, profit, lock) {
+  const c = splitCalc(a, profit, lock); if (!c.rows.length) return '';
+  return c.rows.map(r => `<span class="l">${esc(splitLabel(r))}</span>${money(-r.amt)}`).join('') + `<span class="l tt">Left for you</span><span class="tt">${money(c.left)}</span>`;
+}
+function splitTiles(a, profit, lock) {
+  const c = splitCalc(a, profit, lock);
+  if (!c.rows.length) return `<div class="card tile"><div class="k">Profit split ${help('Who gets what from this account: Owner (the account holder, also when it is rented), VA, Investor, Handler. Set it once per account.')}</div><div class="v" style="font-size:14px"><button class="btn sm pri" data-act="editAcct" data-id="${a.id}">Set the split</button></div></div>`;
+  return `<div class="card tile"><div class="k">Shares ${help('Profit split of this account (Accounts → Edit → Profit split). % rows give nothing on a loss; a fixed amount such as rent is paid every month.')}</div><div class="v">${fmt(c.total)}</div><div class="note">${c.rows.map(r => `${esc(r.role)} ${fmt(r.amt)}`).join(' · ')}</div></div><div class="card tile hi"><div class="k">Left for you</div><div class="v">${fmt(c.left)}</div></div>`;
+}
+const SPLIT_HOW = [{ v: 'pct', l: '% of profit' }, { v: 'left', l: '% of what is left' }, { v: 'fixed', l: '£ fixed a month (rent)' }];
+function defaultSplit(a) {
+  const d = K.prefs.splitDefault && K.prefs.splitDefault.length ? JSON.parse(JSON.stringify(K.prefs.splitDefault)) : [{ role: 'VA', who: [], how: 'pct', v: 30 }];
+  d.forEach(r => { if (r.role === 'VA' && !(r.who || []).length && a && a.va) r.who = [a.va]; });
+  return d;
+}
+function splitEditorStart(a) { S.sp = a && a.id && (Array.isArray(a.split) || splitRows(a).length) ? JSON.parse(JSON.stringify(splitRows(a))) : defaultSplit(a); S.spDef = false; return `<div class="card" id="spEd" style="margin:10px 0">${splitEditorHTML()}</div>`; }
+function splitEditorHTML() {
+  const roles = K.reg['Split role'] || ['Owner', 'VA', 'Investor', 'Handler'];
+  const rows = S.sp || [];
+  const prev = splitCalc({ split: rows }, 50000);
+  return `<h2>Profit split ${help('Who gets a part of this account’s profit. Owner = the person whose account it is (also when you rent it). VA = who runs it. Investor = whose money is in it. Handler = who looks after it. Rows are worked out from top to bottom.')}</h2>
+  <p class="note">Each row: the role, the people (tap to pick one or more; they share the row equally), how it is worked out, and the number.</p>
+  <div class="list">${rows.map((r, i) => `<div class="li" style="flex-wrap:wrap;gap:6px;align-items:flex-start"><div class="grow" style="min-width:220px"><div class="row" style="gap:6px;flex-wrap:wrap">${dd('sp_role_' + i, 'Split role', r.role, roles, 'data-help="The role of this row: Owner, VA, Investor or Handler. “+ Add new…” adds another role."')}${dd('sp_how_' + i, null, r.how || 'pct', SPLIT_HOW, 'data-help="% of profit: worked out on the full profit. % of what is left: worked out on what is left after the rows above. £ fixed: the same amount every month, such as rent."')}<input class="in" id="sp_v_${i}" inputmode="decimal" style="width:90px" value="${esc(r.v ?? '')}" placeholder="${r.how === 'fixed' ? '£' : '%'}" data-help="The % or the £ amount for this row."><button class="btn sm" data-act="spDel" data-i="${i}" data-help="Remove this row.">✕</button></div>
+   <div class="chips" style="margin-top:6px">${K.reg.Person.map(p => `<label class="chip ${(r.who || []).includes(p) ? 'on' : ''}"><input type="checkbox" class="sp_who_${i}" value="${esc(p)}" ${(r.who || []).includes(p) ? 'checked' : ''} hidden>${esc(p)}</label>`).join('')}</div></div></div>`).join('') || '<p class="note">No rows yet.</p>'}</div>
+  <div class="row" style="margin-top:8px"><button class="btn sm" data-act="spAdd" data-help="Add one more role or person to the split.">+ Add a row</button>${['Owner', 'VA', 'Investor', 'Handler'].filter(x => !rows.some(r => r.role === x)).map(x => `<button class="btn sm" data-act="spAdd" data-role="${x}" data-help="Add a ${x} row.">+ ${x}</button>`).join('')}</div>
+  <div class="calc" id="spPrev" style="margin-top:10px"><span class="l">Example: profit £500.00</span>${money(50000)}${prev.rows.map(r => `<span class="l">${esc(splitLabel(r))}</span>${money(-r.amt)}`).join('')}<span class="l tt">Left for you</span><span class="tt">${money(prev.left)}</span></div>
+  <label class="row note" style="margin-top:6px"><input type="checkbox" id="spDef" ${S.spDef ? 'checked' : ''}> Use this split as the default for new accounts</label>`;
+}
+function splitEditorReadDOM() {
+  if (!$('#spEd')) return S.sp || [];
+  return (S.sp || []).map((r, i) => {
+    const role = ($('#sp_role_' + i) || {}).value; const how = ($('#sp_how_' + i) || {}).value || 'pct'; const vv = (($('#sp_v_' + i) || {}).value || '').trim();
+    return { role: role && role !== '__add' ? role : r.role, how, v: vv === '' ? '' : Math.max(0, +vv || 0), who: $$('.sp_who_' + i).filter(c => c.checked).map(c => c.value) };
+  });
+}
+function splitEditorRead() {
+  const rows = splitEditorReadDOM().filter(r => r.role && r.v !== '' && +r.v > 0);
+  const va = ($('#acVA') || {}).value; rows.forEach(r => { if (r.role === 'VA' && !r.who.length && va) r.who = [va]; });
+  if ($('#spDef') && $('#spDef').checked) { K.prefs.splitDefault = rows.map(r => Object.assign({}, r, { who: r.role === 'VA' ? [] : r.who })); save('prefs'); }
+  return rows;
+}
+document.addEventListener('change', ev => {
+  const ed = ev.target.closest && ev.target.closest('#spEd'); if (!ed) return;
+  if (ev.target.value === '__add') return; // the normal "+ Add new" flow
+  S.sp = splitEditorReadDOM(); S.spDef = !!($('#spDef') && $('#spDef').checked); ed.innerHTML = splitEditorHTML();
+});
+document.addEventListener('input', ev => { if (ev.target.closest && ev.target.closest('#spEd') && /^sp_v_/.test(ev.target.id)) { S.sp = splitEditorReadDOM(); const p = splitCalc({ split: S.sp.filter(r => r.v !== '') }, 50000); const el = $('#spPrev'); if (el) el.innerHTML = `<span class="l">Example: profit £500.00</span>${money(50000)}${p.rows.map(r => `<span class="l">${esc(splitLabel(r))}</span>${money(-r.amt)}`).join('')}<span class="l tt">Left for you</span><span class="tt">${money(p.left)}</span>`; } });
+Object.assign(ACT, {
+  spAdd: el => { S.sp = splitEditorReadDOM(); S.spDef = !!($('#spDef') && $('#spDef').checked); const role = el.dataset.role || 'Owner'; S.sp.push({ role, who: role === 'VA' && $('#acVA') && $('#acVA').value ? [$('#acVA').value] : [], how: S.sp.length ? 'left' : 'pct', v: '' }); $('#spEd').innerHTML = splitEditorHTML(); const i = S.sp.length - 1; const inp = $('#sp_v_' + i); if (inp) inp.focus(); },
+  spDel: el => { S.sp = splitEditorReadDOM(); S.sp.splice(+el.dataset.i, 1); $('#spEd').innerHTML = splitEditorHTML(); }
+});
+// everyone's share, month by month (Money → Shares by person)
+V.shares = () => {
+  const rows = {}, per = {};
+  const add = (a, m, profit, lock) => { const c = splitCalc(a, profit, lock); c.rows.forEach(r => r.each.forEach(e => { const k = e.who + '|' + m; const x = rows[k] = rows[k] || { who: e.who, m, roles: new Set(), lines: [], share: 0 }; x.roles.add(r.role); x.lines.push(`${a.name}: ${r.role} ${r.how === 'fixed' ? '£' + r.v : r.v + '%'} of ${fmt(profit)} = ${fmt(e.amt)}`); x.share += e.amt; per[e.who] = (per[e.who] || 0) + e.amt; })); return c; };
+  const acc = []; allAudits().forEach(({ a, m, A }) => { const lock = K.locks[a.id + '|' + m]; const c = add(a, m, A.profit, lock); acc.push({ a, m, profit: A.profit, c }); });
+  Object.entries(K.history).forEach(([k, h]) => { const [id, m] = k.split('|'); const a = acctById(id); if (!a || !accPass(a) || !monthPass(m) || acc.some(x => x.a.id === id && x.m === m)) return; const c = add(a, m, h.profit, h); acc.push({ a, m, profit: h.profit, c }); });
+  const R = Object.values(rows).sort((x, y) => y.m.localeCompare(x.m) || x.who.localeCompare(y.who));
+  return `<h1>Shares by person</h1><p class="sub">Every Owner, VA, Investor and Handler: what each one gets from each account, month by month. Use the filters at the top for one month or one team.</p>
+  <div class="grid">${Object.entries(per).sort((a, b) => b[1] - a[1]).map(([w, v]) => `<div class="card tile"><div class="k">${esc(w)}</div><div class="v">${fmt(v)}</div></div>`).join('') || '<div class="card note">No split set yet. Accounts → Edit → “Profit split”.</div>'}</div>
+  <div class="card"><h2>By person and month</h2><div class="tw"><table><thead><tr><th>Person</th><th>Role</th><th>Month</th><th>How it is worked out</th><th class="r">Share</th></tr></thead><tbody>${R.map(r => `<tr><td>${esc(r.who)}</td><td>${esc([...r.roles].join(', '))}</td><td>${MLL(r.m)}</td><td class="note">${r.lines.map(esc).join('<br>')}</td><td class="r"><b>${money(r.share)}</b></td></tr>`).join('') || '<tr><td colspan="5" class="note">Nothing yet.</td></tr>'}</tbody></table></div></div>
+  <div class="card"><h2>By account</h2><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th class="r">Profit</th><th>Split</th><th class="r">Shares</th><th class="r">Left for you</th></tr></thead><tbody>${acc.sort((x, y) => y.m.localeCompare(x.m) || x.a.name.localeCompare(y.a.name)).map(x => `<tr><td>${esc(x.a.name)}</td><td>${MLL(x.m)}</td><td class="r">${money(x.profit)}</td><td class="note">${x.c.rows.map(r => esc(splitLabel(r)) + ' = ' + fmt(r.amt)).join('<br>') || `<button class="btn sm" data-act="editAcct" data-id="${x.a.id}">Set the split</button>`}</td><td class="r">${money(x.c.total)}</td><td class="r"><b>${money(x.c.left)}</b></td></tr>`).join('') || '<tr><td colspan="6" class="note">No audits yet.</td></tr>'}</tbody></table></div></div>`;
+};
+
+// ====================== links that open in a new window ======================
+function hashFor(st) {
+  const p = new URLSearchParams(); p.set('v', st.view || 'home');
+  if (st.view === 'audit') { if (st.acct) p.set('a', st.acct); if (st.month) p.set('m', st.month); if (st.tab) p.set('t', st.tab); }
+  if (st.view === 'register' && st.list) p.set('l', st.list);
+  return '#' + p.toString();
+}
+const navHash = () => hashFor(S);
+function readHash() {
+  try { const h = location.hash.replace(/^#/, ''); if (!h) return; const p = new URLSearchParams(h); const v = p.get('v'); if (!v) return; S.view = v; if (p.get('a')) S.acct = p.get('a'); if (p.get('m')) S.month = p.get('m'); if (p.get('t')) S.tab = p.get('t'); if (p.get('l')) S.list = p.get('l'); } catch (e) { }
+}
+readHash();
+window.addEventListener('hashchange', () => { if (location.hash !== navHash()) { readHash(); render(); } });
+const newWin = st => { const u = location.href.split('#')[0] + hashFor(st); window.open(u, '_blank', 'noopener'); };
+// Ctrl / ⌘ / middle click on any screen button opens it in a new window
+document.addEventListener('click', ev => {
+  if (!(ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button === 1)) return;
+  const t = ev.target.closest && ev.target.closest('[data-go],[data-act="goAudit"],[data-act="lkGo"]'); if (!t) return;
+  ev.preventDefault(); ev.stopPropagation();
+  if (t.dataset.go) newWin({ view: t.dataset.go, list: t.dataset.list }); else newWin({ view: 'audit', acct: t.dataset.acct, month: t.dataset.month, tab: 'summary' });
+}, true);
+document.addEventListener('auxclick', ev => { if (ev.button !== 1) return; const t = ev.target.closest && ev.target.closest('[data-go]'); if (t) { ev.preventDefault(); newWin({ view: t.dataset.go }); } }, true);
+Object.assign(ACT, { newWin: el => newWin(el.dataset.st ? JSON.parse(el.dataset.st) : { view: el.dataset.v }) });
+
+// ====================== grouped menu ======================
+const GROUPS = [
+  ['home', 'Home', '⌂', []],
+  ['g_audit', 'Audit', '✓', [['accounts', 'Accounts'], ['issues', 'Open issues'], ['aside', 'Kept aside'], ['held', 'Held money']]],
+  ['g_files', 'Files', '+', [['add', 'Files & Drive'], ['drive', 'Drive folders']]],
+  ['g_money', 'Money', '£', [['shares', 'Shares by person'], ['trend', 'Trend'], ['health', 'Account health'], ['history', 'History']]],
+  ['stock', 'Stock', '▤', []],
+  ['g_setup', 'Setup', '⚙', [['register', 'Lists & fields'], ['settings', 'Settings'], ['helpv', 'Help']]]
+];
+const VIEW_NAME = Object.fromEntries(GROUPS.flatMap(g => g[3].length ? g[3] : [[g[0], g[1]]]));
+VIEW_NAME.audit = 'Audit'; VIEW_NAME.menu = 'More';
+S.grp = S.grp || {};
+function groupOf(v) { const g = GROUPS.find(g => g[3].some(x => x[0] === v) || (v === 'audit' && g[0] === 'g_audit')); return g ? g[0] : null; }
+function railHTML() {
+  const hide = ROLE_HIDE[K.prefs.viewAs] || []; const c = counts(); const cur = S.view === 'audit' ? 'accounts' : S.view; const og = groupOf(S.view);
+  const item = (v, l, ico, sub) => `<div class="navrow${sub ? ' sub' : ''}"><a class="nav ${cur === v ? 'on' : ''}" href="${esc(hashFor({ view: v }))}" data-go="${v}" data-help="Open ${esc(l)}. Ctrl-click or the ↗ button opens it in a new window.">${ico ? `<span aria-hidden="true" style="width:16px;text-align:center">${ico}</span>` : ''}${esc(l)}${v === 'issues' && c.issues ? `<b>${c.issues}</b>` : ''}</a><a class="nw" href="${esc(hashFor({ view: v }))}" target="_blank" rel="noopener" title="Open ${esc(l)} in a new window" aria-label="Open ${esc(l)} in a new window">↗</a></div>`;
+  return `<div class="brand"><span class="lg">${LOGO_SVG}</span><span>Audit Desk</span></div>` + GROUPS.map(([k, l, ico, subs]) => {
+    if (!subs.length) return hide.includes(k) ? '' : item(k, l, ico);
+    const vis = subs.filter(s => !hide.includes(s[0])); if (!vis.length) return '';
+    const open = S.grp[k] !== undefined ? S.grp[k] : og === k;
+    return `<button class="nav grp ${og === k ? 'here' : ''}" data-act="grp" data-k="${k}" aria-expanded="${open}" data-help="Show or hide the ${esc(l)} screens."><span aria-hidden="true" style="width:16px;text-align:center">${ico}</span>${esc(l)}<span class="car">${open ? '▾' : '▸'}</span></button>${open ? vis.map(s => item(s[0], s[1], '', true)).join('') : ''}`;
+  }).join('') + `<div style="margin-top:auto" class="note railfoot">Viewing as: <b>${esc(K.prefs.viewAs)}</b><br><span id="syncline">${typeof SYNC !== 'undefined' && SYNC.db ? esc(syncLabel()) : 'Saved on this device'}</span><br>Version ${APPV}</div>`;
+}
+const _shell = shell;
+shell = function () {
+  _shell();
+  try {
+    $('#rail').innerHTML = railHTML();
+    const tr = $('#top .toprow'); if (tr && !$('#helpBtn')) tr.insertAdjacentHTML('beforeend', `<button class="btn sm ${HELP.on ? 'pri' : ''}" id="helpBtn" data-act="helpMode" data-help="Help mode: when it is on, tapping any button or box first tells you what it does, then you tap “Do it”.">${HELP.on ? 'Help: on' : 'Help'}</button>`);
+    const sb = $('#top .search'); if (sb && !sb.querySelector('.slogo')) sb.insertAdjacentHTML('afterbegin', `<span class="slogo" aria-hidden="true">${LOGO_SVG}</span>`);
+  } catch (e) { logErr(e, 'menu'); }
+};
+Object.assign(ACT, { grp: el => { const k = el.dataset.k; const og = groupOf(S.view); const open = S.grp[k] !== undefined ? S.grp[k] : og === k; S.grp[k] = !open; shell(); } });
+V.menu = () => `<h1>More</h1><p class="note">Viewing as ${esc(K.prefs.viewAs)} · ${typeof SYNC !== 'undefined' && SYNC.db ? esc(syncLabel()) : 'Saved on this device'} · Version ${APPV}</p>${GROUPS.filter(g => g[3].length).map(([k, l, ico, subs]) => `<div class="card"><h2>${ico} ${esc(l)}</h2><div class="list">${subs.filter(s => !(ROLE_HIDE[K.prefs.viewAs] || []).includes(s[0])).map(([v, n]) => `<div class="li"><a class="grow nav" href="${esc(hashFor({ view: v }))}" data-go="${v}" style="padding:10px 4px">${esc(n)}</a><a class="btn sm" href="${esc(hashFor({ view: v }))}" target="_blank" rel="noopener" aria-label="Open ${esc(n)} in a new window">↗</a></div>`).join('')}</div></div>`).join('')}<div class="card"><div class="list"><a class="nav" href="${esc(hashFor({ view: 'stock' }))}" data-go="stock" style="padding:10px 4px">▤ Stock</a></div></div>`;
+// breadcrumb with the group and a new-window button
+crumbs = function () {
+  const L = [['home', 'Home']]; const g = groupOf(S.view); const gl = g ? GROUPS.find(x => x[0] === g)[1] : '';
+  if (S.view === 'audit') { L.push(['accounts', 'Accounts']); const a = acctById(S.acct); L.push([null, `${a ? a.name : ''} · ${MLL(S.month)}`]); }
+  else if (S.view !== 'home') { if (gl) L.push([null, gl, true]); L.push([null, VIEW_NAME[S.view] || S.view]); }
+  return `<nav class="crumbs" aria-label="You are here">${L.map(([v, t, grey], i) => v && i < L.length - 1 ? `<a href="${esc(hashFor({ view: v }))}" data-go="${v}">${esc(t)}</a><span>›</span>` : grey ? `<span class="note">${esc(t)}</span><span>›</span>` : `<b>${esc(t)}</b>`).join('')}<a class="nw" href="${esc(navHash())}" target="_blank" rel="noopener" title="Open this screen in a new window" aria-label="Open this screen in a new window">↗</a></nav>`;
+};
+
+// ====================== Next bar: the tool says what to do and does it ======================
+function nextList() {
+  const L = [];
+  try {
+    const chk = activeParts().filter(p => p.check && !p.checked && !p.ignored && p.kind !== 'unknown').length;
+    if (chk) L.push({ t: `${chk} file${chk > 1 ? 's were' : ' was'} placed by a best guess. One look and they are done.`, b: 'Check them', act: 'nxGo', v: 'home' });
+    const m0 = AD.addMonths(thisMonth(), -1);
+    K.acc.filter(accPass).forEach(a => {
+      const ms = [...new Set(FILES.flatMap(f => f.parts).filter(p => p.acct === a.id && p.month).map(p => p.month))].sort().reverse();
+      const m = ms[0] || m0; if (K.locks[a.id + '|' + m] || K.history[a.id + '|' + m]) return;
+      let g; try { g = steps(a.id, m); } catch (e) { return; }
+      if (!g || !g.next) { if (g && g.A) L.push({ t: `${a.name} · ${MLL(m)}: every step is done. Lock it so the numbers stay.`, b: 'Open and lock', act: 'goAudit', acct: a.id, month: m }); return; }
+      const s = g.next; const fileStep = ['txn', 'ord', 'va', 'stock', 'stmt', 'shot', 'ae'].includes(s.k) || s.kind;
+      L.push({ t: `${a.name} · ${MLL(m)}: next is ${s.t}.`, b: fileStep ? 'Add it' : 'Open', act: fileStep ? 'pick' : 'goAudit', acct: a.id, month: m, alt: fileStep && typeof DRV !== 'undefined' && DRV.mcp ? { b: 'Look in Drive', act: 'driveNow' } : null });
+    });
+    const iss = counts().issues; if (iss) L.push({ t: `${iss} open issue${iss > 1 ? 's' : ''} to sort out.`, b: 'Show them', act: 'nxGo', v: 'issues' });
+    if (!K.acc.some(a => splitRows(a).length)) L.push({ t: 'Set the profit split (Owner, VA, Investor, Handler) once per account, so every share is worked out by itself.', b: 'Set it', act: 'nxGo', v: 'accounts' });
+  } catch (e) { logErr(e, 'next'); }
+  return L;
+}
+function nextBar() {
+  if (S.view === 'menu') return '';
+  const L = nextList(); if (!L.length) return `<div class="nextbar ok"><span class="ic i-ok">✓</span><div class="grow">All done for now. The tool keeps checking Drive and will tell you when something new comes in.</div></div>`;
+  const x = L[0], btn = (o, cls) => `<button class="btn sm ${cls || ''}" data-act="${o.act}" ${o.acct ? `data-acct="${esc(o.acct)}"` : ''} ${o.month ? `data-month="${esc(o.month)}"` : ''} ${o.v ? `data-v="${esc(o.v)}"` : ''}>${esc(o.b)}</button>`;
+  return `<div class="nextbar"><span class="ic i-warn">→</span><div class="grow"><b>Next:</b> ${esc(x.t)}</div><div class="row">${btn(x, 'pri')}${x.alt ? btn(x.alt) : ''}${L.length > 1 ? `<button class="btn sm" data-act="nxMore" aria-expanded="${!!S.nxMore}">${S.nxMore ? 'Fewer' : `${L.length - 1} more`}</button>` : ''}</div>${S.nxMore ? `<div class="list" style="flex-basis:100%;margin-top:6px">${L.slice(1, 12).map(o => `<div class="li"><div class="grow">${esc(o.t)}</div>${btn(o)}</div>`).join('')}</div>` : ''}</div>`;
+}
+Object.assign(ACT, { nxMore: () => { S.nxMore = !S.nxMore; render(); }, nxGo: el => go(el.dataset.v) });
+const _render = render;
+render = function () {
+  _render();
+  try {
+    const v = $('#view'); if (!v || !v.firstChild) return;
+    const nb = document.createElement('div'); nb.innerHTML = nextBar(); if (nb.firstChild) v.insertBefore(nb.firstChild, v.firstChild);
+    if (!IS_GAS) { const h = navHash(); if (location.hash !== h) try { history.replaceState(history.state, '', h); } catch (e) { } }
+    helpTitles();
+  } catch (e) { logErr(e, 'next bar'); }
+};
+
+// ====================== help on everything ======================
+const HELP = { on: false, armed: null };
+try { HELP.on = localStorage.getItem('ad-help') === '1'; } catch (e) { }
+const HELPT = {
+  acDel: 'Removes this account. Its files stay in the tool and can be placed again.', acMerge: 'Joins this account into the one you pick: files, issues and locks move there.', acSave: 'Saves the account, its split and its fields. Every screen updates at once.', addAcct: 'Adds a new account: name, seller ID, team, VA and the profit split.',
+  anSave: 'Adds the new value to the list. It shows in every dropdown at once.', backup: 'Downloads a safety copy of everything in the tool.', bulk: 'Changes all ticked issues at once.', checkAll: 'Says every “Please check” guess is right.',
+  ckAcct: 'The account this file belongs to. Changing it moves the file and its Drive copy.', ckKind: 'What this picture or PDF is: Seller Hub screenshot, statement, other proof, or not needed.', ckMonth: 'The month this file is for.', ckOk: 'Says this guess is right.',
+  clearAll: 'Clears all filters.', clearErr: 'Clears the error list.', clearRes: 'Clears the list of what the tool found (files stay).', close: 'Closes this window. Nothing is lost.', copyErr: 'Copies the errors so you can paste them to Claude.',
+  copyVA: 'Copies a ready message for the VA (WhatsApp or email).', copyWeekly: 'Copies the weekly summary to paste in WhatsApp or email.', delFile: 'Removes this file from the tool (the Drive file is not touched).',
+  driveAddGo: 'Adds this Drive folder or file to the list the tool reads.', driveDel: 'Stops reading this Drive folder. Files already read stay.', driveNow: 'Reads Google Drive now and brings in new or changed files.',
+  editAcct: 'Edits the account: names, seller ID, team, VA and the profit split.', fAdd: 'Adds a new field to forms.', fDel: 'Removes this field.', fopen: 'Shows or hides the filters.', fsConnect: 'Connects a Drive folder on this computer.',
+  goAudit: 'Opens the audit of this account and month. Ctrl-click opens it in a new window.', gwSignIn: 'Signs in with Google (aemporio6) so the tool reads Drive by itself.', help: 'Explains this item.', histBack: 'Moves this month back from History to the audit screens.', histOpen: 'Opens the saved month from History.',
+  iField: 'Changes this field of the issue.', iStatus: 'Changes the issue status: Open, In progress, Done or Ignored.', issOrders: 'Shows the orders behind this issue.', layout: 'Phone or computer layout.', list: 'Opens this list.', lkGo: 'Opens this locked month.',
+  lock: 'Locks the month: numbers and split stay as they are now. Unlock any time.', mapKind: 'What this file is.', mapRow: 'The row that holds the column names.', monthSel: 'Picks the month.', more: 'Shows more filters.',
+  msAdd: 'Adds a new value to this list.', msAll: 'Ticks every value.', msClear: 'Clears this filter.', msOpen: 'Opens this filter: tick one or more values.', msTick: 'Ticks or unticks this value.', naGo: 'Marks this step as not available for this month.',
+  navBack: 'Back to the screen before (Alt+←).', navFwd: 'Forward again (Alt+→).', newAudit: 'Starts an audit: pick the account and month, then follow the steps.', ofl: 'Shows only these orders.', oflSel: 'Order filter.', order: 'Opens this order: sales, fees, cost and profit line by line.',
+  pg: 'Next or previous page.', picAs: 'Uses this picture as the chosen kind.', pick: 'Adds a file for this step. Any file and any name: the tool works out what it is.', print: 'Prints this screen or saves it as PDF.', redo: 'Redo (Ctrl+Y).',
+  regAdd: 'Adds a value to this list.', regDel: 'Removes this value from the list.', regRen: 'Renames this value everywhere it is used.', selAll: 'Ticks all.', selNone: 'Unticks all.', selOne: 'Ticks this one.', setAcct: 'Puts this file under the account you pick.',
+  sgo: 'Goes to this result.', shDel: 'Removes the screenshot numbers.', shSave: 'Saves the screenshot numbers and compares them with the eBay report.', shot: 'Opens the screenshot numbers.', showDone: 'Shows or hides finished items.',
+  stSave: 'Saves this stock entry.', stepOpen: 'Opens this step and shows where to get the file.', stepSkip: 'This file is not available this month; the step stops asking.', stepUnskip: 'Asks for this step again.', stockAdd: 'Adds stock that came in (SKU, quantity, cost).', stockDel: 'Removes this stock entry.',
+  tab: 'Opens this part of the audit.', undo: 'Undo the last change (Ctrl+Z).', unlock: 'Unlocks the month so it can change again.', updTool: 'Updates the tool.', useAs: 'Uses this file as the kind you picked, with these columns.',
+  viewDel: 'Deletes this saved view.', viewLoad: 'Opens this saved view (filters).', viewSave: 'Saves the current filters as a view.', wipe: 'Removes all data from this device.', wipeGo: 'Yes, remove everything.', xlsx: 'Downloads the full audit as an Excel file.',
+  grp: 'Shows or hides this group of screens.', helpMode: 'Help mode on or off.', nxMore: 'Shows all suggestions.', nxGo: 'Goes there.', spAdd: 'Adds a row to the split.', spDel: 'Removes this row.', newWin: 'Opens it in a new window.',
+  dsScope: 'Whole Drive: the tool looks everywhere for audit files. Only chosen folders: it reads just the folders you tick.', dsTick: 'Tick to read this folder.', dsNow: 'Reads only this folder now.', dsAcct: 'All files in this folder belong to this account (eBay reports still go by seller ID).', dsLoad: 'Loads the list of your Drive folders.', dsFind: 'Type part of a folder name.'
+};
+const GO_HELP = { home: 'Home: what to do next for every account.', add: 'Files & Drive: everything the tool read, and adding a file by hand.', accounts: 'Accounts: every account and month with its progress.', issues: 'Open issues: everything that needs fixing.', aside: 'Kept aside: rows and files the tool kept on one side, nothing lost.', held: 'Held money: money eBay still holds.', health: 'Account health: warning signs per month.', stock: 'Stock: what came in, what sold, what is left.', trend: 'Trend: month by month.', history: 'History: locked months older than two months.', register: 'Lists & fields: every dropdown list.', settings: 'Settings.', shares: 'Shares by person: Owner, VA, Investor and Handler shares.', drive: 'Drive folders: choose the whole Drive or only some folders.', helpv: 'Help: how the tool works.', menu: 'All screens.' };
+function helpFor(el) {
+  if (!el) return '';
+  if (el.dataset && el.dataset.help) return el.dataset.help;
+  if (el.dataset && el.dataset.go) return GO_HELP[el.dataset.go] || '';
+  if (el.dataset && el.dataset.act && HELPT[el.dataset.act]) return HELPT[el.dataset.act];
+  if (el.tagName === 'SELECT') { const l = el.dataset.list || (el.closest('label') && el.closest('label').firstChild && el.closest('label').firstChild.textContent) || ''; return l ? `Pick from the “${l.trim()}” list. “+ Add new…” adds a value that then shows everywhere.` : 'Pick a value.'; }
+  if (el.tagName === 'INPUT' && el.id === 'gq') return 'Search anything: order number, SKU, tracking, account, issue or file. Spaces, dots and dashes do not matter.';
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') { const l = el.closest('label'); return l ? `Type the ${l.textContent.trim().split('\n')[0].toLowerCase()}.` : el.placeholder || ''; }
+  return el.getAttribute && (el.getAttribute('aria-label') || el.title) || '';
+}
+let HT = null;
+function helpTitles() { clearTimeout(HT); HT = setTimeout(() => { $$('[data-act],[data-go],select,input,textarea').forEach(el => { if (!el.title && el.dataset.act !== 'help') { const t = helpFor(el); if (t) el.title = t; } }); }, 60); }
+new MutationObserver(() => helpTitles()).observe(document.body, { childList: true, subtree: true });
+function helpPop(el, canDo) {
+  closeHelpPop(); const t = helpFor(el) || 'This part of the screen.'; const r = el.getBoundingClientRect();
+  const d = document.createElement('div'); d.id = 'helppop'; d.setAttribute('role', 'dialog');
+  d.innerHTML = `<div class="hp-t"><span class="lg">${LOGO_SVG}</span>${esc(t)}</div><div class="row" style="margin-top:8px">${canDo ? '<button class="btn sm pri" id="hpDo">Do it</button>' : ''}<button class="btn sm" id="hpX">Got it</button></div>`;
+  document.body.appendChild(d);
+  const w = Math.min(320, innerWidth - 24); d.style.width = w + 'px'; d.style.left = Math.max(12, Math.min(innerWidth - w - 12, r.left)) + 'px'; d.style.top = (r.bottom + 8 + 120 > innerHeight ? Math.max(8, r.top - d.offsetHeight - 8) : r.bottom + 8) + 'px';
+  $('#hpX').onclick = closeHelpPop; if (canDo) $('#hpDo').onclick = () => { closeHelpPop(); HELP.armed = el; if (el.tagName === 'SELECT' || el.tagName === 'INPUT') el.focus(); else el.click(); HELP.armed = null; };
+}
+function closeHelpPop() { const d = $('#helppop'); if (d) d.remove(); }
+document.addEventListener('click', ev => {
+  if (!HELP.on) return; if (ev.target.closest('#helppop')) return;
+  const el = ev.target.closest('[data-act],[data-go],a.nw,button,.drop,label.chip'); if (!el || el === HELP.armed) return;
+  if (el.dataset.act === 'helpMode' || el.dataset.act === 'close') return;
+  ev.preventDefault(); ev.stopPropagation(); helpPop(el, true);
+}, true);
+document.addEventListener('focusin', ev => { if (!HELP.on) return; const el = ev.target; if (['SELECT', 'INPUT', 'TEXTAREA'].includes(el.tagName) && el !== HELP.armed && !el.closest('#helppop')) helpPop(el, false); });
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeHelpPop(); });
+Object.assign(ACT, { helpMode: () => { HELP.on = !HELP.on; try { localStorage.setItem('ad-help', HELP.on ? '1' : '0'); } catch (e) { } document.documentElement.classList.toggle('helpon', HELP.on); toast(HELP.on ? 'Help mode is on: tap anything to see what it does, then “Do it”.' : 'Help mode is off.'); const b = $('#helpBtn'); if (b) b.remove(); shell(); } });
+document.documentElement.classList.toggle('helpon', HELP.on);
+V.helpv = () => `<h1>Help</h1><p class="sub">How the tool works. Turn on <b>Help</b> at the top: then every button and box explains itself before it does anything.</p>
+  <div class="card"><h2>The month in 5 steps</h2><div class="list">${[['1', 'Files come in by themselves from Google Drive (or drop any file anywhere). Any name, any layout, pictures and PDFs too.'], ['2', 'The tool works out what each file is, which account and which month. Guesses show in “Please check” with dropdowns.'], ['3', 'Follow the “Next” bar at the top of every screen. It always shows the most useful next step with a button that does it.'], ['4', 'Open issues show what does not add up, with the orders behind them.'], ['5', 'Lock the month. The profit split (Owner, VA, Investor, Handler) is worked out and kept with it.']].map(([n, t]) => `<div class="li"><div class="ic i-ok">${n}</div><div class="grow">${esc(t)}</div></div>`).join('')}</div></div>
+  <div class="card"><h2>Screens</h2><div class="list">${Object.entries(GO_HELP).filter(([k]) => k !== 'menu').map(([k, t]) => `<div class="li"><div class="grow">${esc(t)}</div><a class="btn sm" href="${esc(hashFor({ view: k }))}" data-go="${k}">Open</a><a class="btn sm" href="${esc(hashFor({ view: k }))}" target="_blank" rel="noopener" aria-label="Open in a new window">↗</a></div>`).join('')}</div></div>
+  <div class="card"><h2>Buttons</h2><div class="tw"><table><tbody>${Object.entries(HELPT).map(([k, t]) => `<tr><td class="note num">${esc(k)}</td><td>${esc(t)}</td></tr>`).join('')}</tbody></table></div></div>`;
+
+// ====================== Drive folders: whole Drive or chosen folders ======================
+const DS = { folders: null, loading: false, q: '' };
+async function dsLoad() {
+  if (!DRV.mcp) { toast('Connect Google Drive first.'); return; } if (DS.loading) return; DS.loading = true; spin(3000); render();
+  try {
+    const out = []; let tok = null, guard = 0;
+    do { const r = pay(await gcall('search_files', Object.assign({ query: "mimeType = 'application/vnd.google-apps.folder'", pageSize: 200, excludeContentSnippets: true }, tok ? { pageToken: tok } : {}))); (r && r.files || []).forEach(f => { if (!out.some(x => x.id === f.id)) out.push({ id: f.id, title: f.title, parentId: f.parentId, modifiedTime: f.modifiedTime }); }); tok = r && (r.nextPageToken || r.next_page_token); } while (tok && ++guard < 10);
+    const byId = Object.fromEntries(out.map(f => [f.id, f])); out.forEach(f => { const p = []; let x = f, g = 0; while (x && x.parentId && byId[x.parentId] && g++ < 8) { x = byId[x.parentId]; p.unshift(x.title); } f.path = p.join(' / '); });
+    DS.folders = out.sort((a, b) => (a.path + '/' + a.title).localeCompare(b.path + '/' + b.title));
+  } catch (e) { logErr(e, 'drive folders'); toast('Could not load the folders: ' + (e.code || e.message)); }
+  DS.loading = false; render();
+}
+V.drive = () => {
+  const R = roots(), scope = K.prefs.driveScope || 'some';
+  const accOpts = [{ v: '', l: 'Find it from the file' }, ...K.acc.map(a => ({ v: a.id, l: a.name }))];
+  const q = AD.norm(DS.q || ''); const F = (DS.folders || []).filter(f => !q || AD.norm(f.title + ' ' + f.path).includes(q));
+  return `<h1>Drive folders</h1><p class="sub">Choose where the tool looks. It reads them by itself when the link opens and every 30 minutes.</p>
+  <div class="card"><h2>Where to look</h2><div class="form"><label>Look in ${dd('dsScope', null, scope, [{ v: 'some', l: 'Only the folders I choose (below)' }, { v: 'all', l: 'The whole Drive (audit files only)' }], 'data-act-change="dsScope" data-help="' + esc(HELPT.dsScope) + '"')}</label></div>
+  <p class="note">${scope === 'all' ? 'Whole Drive: spreadsheets and reports changed in the last 60 days anywhere in your Drive, plus Seller Hub screenshots and statements by their name or folder. Files that are not audit files are skipped, so nothing needs fixing by hand. The folders below are still read in full.' : 'Only the folders below, with everything inside them.'}</p></div>
+  <div class="card"><div class="row between"><h2>Folders the tool reads (${R.length})</h2><button class="btn sm pri" data-act="driveNow">Check all now</button></div>
+  <div class="list">${R.map((r, i) => `<div class="li" style="flex-wrap:wrap"><div class="ic i-${r.bad ? 'bad' : 'ok'}">${r.bad ? '✕' : '✓'}</div><div class="grow" style="min-width:180px"><div class="t">${esc(r.title || r.name || r.id)}</div><div class="d">${r.bad ? 'Cannot be opened with this Google sign-in' : r.isFolder === false ? 'Single file' : 'Folder and everything inside'}</div></div>${dd('dsA_' + i, null, r.acct || '', accOpts, `data-i="${i}" data-act-change="dsAcct" aria-label="Files here belong to" data-help="${esc(HELPT.dsAcct)}"`)}<button class="btn sm" data-act="dsNow" data-i="${i}">Check now</button><button class="btn sm" data-act="driveDel" data-i="${i}" data-id="${esc(r.id)}">Remove</button></div>`).join('') || '<p class="note">No folders yet. Tick some below.</p>'}</div></div>
+  <div class="card"><div class="row between"><h2>All my Drive folders</h2><button class="btn sm" data-act="dsLoad">${DS.loading ? 'Loading…' : DS.folders ? 'Load again' : 'Load the list'}</button></div>
+  ${DS.folders ? `<input class="in" id="dsFind" style="width:100%;margin:6px 0" placeholder="Type part of a folder name" value="${esc(DS.q)}" data-help="${esc(HELPT.dsFind)}"><div class="list" style="max-height:60vh;overflow:auto">${F.slice(0, 400).map(f => { const on = R.some(r => r.id === f.id); return `<label class="li" style="cursor:pointer"><input type="checkbox" data-act-change="dsTick" data-id="${esc(f.id)}" data-t="${esc(f.title)}" ${on ? 'checked' : ''}><div class="grow"><div class="t">${esc(f.title)}</div><div class="d">${esc(f.path || 'My Drive')}</div></div></label>`; }).join('') || '<p class="note">No folder with that name.</p>'}</div>` : `<p class="note">${DRV.mcp ? 'Tap “Load the list” to see every folder in your Drive and tick the ones to read.' : 'Connect Google Drive first.'}</p>`}</div>`;
+};
+document.addEventListener('change', async ev => {
+  const t = ev.target, a = t.dataset && t.dataset.actChange; if (!a) return;
+  if (a === 'dsScope') { K.prefs.driveScope = t.value; await save('prefs'); toast(t.value === 'all' ? 'The tool now looks in the whole Drive for audit files.' : 'The tool now reads only the chosen folders.'); render(); driveSync(true); }
+  else if (a === 'dsAcct') { const r = roots()[+t.dataset.i]; if (!r) return; r.acct = t.value || ''; await save('prefs'); toast(t.value ? `Files in “${r.title || r.name}” now go to ${acctById(t.value).name}.` : 'Files here are placed by what is inside them.'); }
+  else if (a === 'dsTick') { const R = roots(); const id = t.dataset.id; if (t.checked) { if (!R.some(r => r.id === id)) R.push({ id, name: t.dataset.t, title: t.dataset.t, isFolder: true }); } else { const i = R.findIndex(r => r.id === id); if (i > -1) R.splice(i, 1); } await save('prefs'); render(); if (t.checked) dsCheck(id); }
+});
+document.addEventListener('input', ev => { if (ev.target.id === 'dsFind') { DS.q = ev.target.value; const pos = ev.target.selectionStart; render(); const n = $('#dsFind'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { } } } });
+async function dsCheck(id) { DRV.only = id; try { await driveSync(true); } finally { DRV.only = null; } }
+Object.assign(ACT, { dsLoad: () => dsLoad(), dsNow: el => { const r = roots()[+el.dataset.i]; if (r) dsCheck(r.id); } });
+
+// ====================== importer: takes anything ======================
+const u8str = (u, a, b) => { let s = ''; for (let i = a; i < Math.min(b, u.length); i++) s += String.fromCharCode(u[i]); return s; };
+function toCSV(rows) { return rows.map(r => r.map(c => { const s = c == null ? '' : String(c); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\r\n'); }
+function zipEntries(u8) {
+  try { const X = window.XLSX; if (!X || !X.CFB) return null; const z = X.CFB.read(u8, { type: 'buffer' }); return z.FileIndex.map((e, i) => ({ name: z.FullPaths[i].replace(/^Root Entry\//, '').replace(/^\//, ''), type: e.type, content: e.content })).filter(e => e.type === 2 && e.content && e.content.length && !/(^|\/)\u0001/.test(e.name)); } catch (e) { return null; }
+}
+function docxTables(xml) {
+  const rows = []; const tbls = xml.match(/<w:tbl[\s>][\s\S]*?<\/w:tbl>/g) || [];
+  tbls.forEach(t => { (t.match(/<w:tr[\s>][\s\S]*?<\/w:tr>/g) || []).forEach(tr => { rows.push((tr.match(/<w:tc[\s>][\s\S]*?<\/w:tc>/g) || []).map(tc => (tc.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || []).map(x => x.replace(/<[^>]+>/g, '')).join(' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim())); }); rows.push([]); });
+  return rows;
+}
+function jsonRows(v) {
+  let best = null; const visit = (x, d) => { if (d > 6 || !x || typeof x !== 'object') return; if (Array.isArray(x)) { if (x.length && x.every(o => o && typeof o === 'object' && !Array.isArray(o)) && (!best || x.length > best.length)) best = x; x.slice(0, 50).forEach(y => visit(y, d + 1)); } else Object.values(x).forEach(y => visit(y, d + 1)); };
+  visit(v, 0); if (!best) return null;
+  const flat = o => { const r = {}; const go = (x, p) => Object.entries(x).forEach(([k, y]) => { const key = p ? p + ' ' + k : k; if (y && typeof y === 'object' && !Array.isArray(y)) go(y, key); else r[key] = Array.isArray(y) ? y.join('; ') : y; }); go(o, ''); return r; };
+  const F = best.map(flat); const H = [...new Set(F.flatMap(o => Object.keys(o)))];
+  return [H, ...F.map(o => H.map(h => o[h] ?? ''))];
+}
+function emlParts(text, seen = new Set()) {
+  const out = []; const bm = text.match(/boundary="?([^"\r\n;]+)"?/i); if (!bm || seen.has(bm[1]) || seen.size > 5) return out; seen.add(bm[1]);
+  text.split('--' + bm[1]).forEach(part => {
+    const fn = part.match(/(?:filename|name)\*?="?([^"\r\n;]+)"?/i); if (!fn) { if (/boundary=/i.test(part)) out.push(...emlParts(part, seen)); return; }
+    const i = part.search(/\r?\n\r?\n/); if (i < 0) return; const head = part.slice(0, i), body = part.slice(i).trim();
+    try { const bytes = /base64/i.test(head) ? Uint8Array.from(atob(body.replace(/[^A-Za-z0-9+/=]/g, '')), c => c.charCodeAt(0)) : new TextEncoder().encode(body); out.push({ name: decodeURIComponent(fn[1].replace(/^utf-8''/i, '')), bytes }); } catch (e) { }
+  });
+  return out;
+}
+const _intake = intake;
+intake = async function (file, hint = {}, path = '') {
+  spin(900);
+  let u8; try { u8 = new Uint8Array(await file.arrayBuffer()); } catch (e) { return _intake(file, hint, path); }
+  const name = file.name || 'file';
+  const kept = (m) => ({ rec: null, msgs: [{ t: 'grey', m }] });
+  try {
+    // ZIP: xlsx / ods go straight in; Word gives its tables; any other zip is opened and every file inside is read
+    if (u8[0] === 0x50 && u8[1] === 0x4B && u8[2] === 0x03 && u8[3] === 0x04) {
+      const E = zipEntries(u8);
+      if (E && !E.some(e => /^xl\/|content\.xml$|^Index\/Document\.iwa/i.test(e.name))) {
+        const doc = E.find(e => /^word\/document\.xml$/i.test(e.name));
+        if (doc) { const rows = docxTables(new TextDecoder().decode(doc.content)); if (rows.some(r => r.length > 1)) return _intake(new File([toCSV(rows)], name.replace(/\.\w+$/, '') + ' (tables).csv'), hint, path); return _intake(file, hint, path); }
+        const inner = E.filter(e => !/(^|\/)(__MACOSX|\.)/.test(e.name) && !/\/$/.test(e.name));
+        let first = null; const msgs = [{ t: 'ok', m: `Zip file with ${inner.length} file${inner.length === 1 ? '' : 's'} inside: each one was read by itself.` }];
+        for (const e of inner.slice(0, 200)) { const r = await intake(new File([e.content], e.name.split('/').pop()), hint, (path ? path + '/' : '') + name + '/' + e.name.split('/').slice(0, -1).join('/')); if (r && r.rec && !first) first = r.rec; (r && r.msgs || []).slice(0, 2).forEach(m => msgs.push(Object.assign({}, m, { m: e.name.split('/').pop() + ': ' + m.m }))); }
+        return { rec: first, msgs };
+      }
+    }
+    const head = u8str(u8, 0, 4000);
+    // e-mail saved as a file: its attachments are read
+    if (/^(Received|From|Return-Path|MIME-Version|Delivered-To|Date|Subject):/im.test(head) && /Content-Type:\s*multipart/i.test(head + u8str(u8, 4000, 20000))) {
+      const P = emlParts(new TextDecoder('latin1').decode(u8)); if (P.length) { let first = null; const msgs = [{ t: 'ok', m: `E-mail with ${P.length} attachment${P.length > 1 ? 's' : ''}: each one was read.` }]; for (const p of P) { const r = await intake(new File([p.bytes], p.name), hint, path); if (r && r.rec && !first) first = r.rec; (r && r.msgs || []).slice(0, 2).forEach(m => msgs.push(Object.assign({}, m, { m: p.name + ': ' + m.m }))); } return { rec: first, msgs }; }
+    }
+    // JSON: the biggest list inside becomes a table
+    const tt = head.replace(/^﻿/, '').trimStart();
+    if ((tt[0] === '[' || tt[0] === '{') && !/\.(csv|txt|tsv)$/i.test(name)) { try { const rows = jsonRows(JSON.parse(new TextDecoder().decode(u8))); if (rows && rows.length > 1) return _intake(new File([toCSV(rows)], name.replace(/\.\w+$/, '') + ' (data).csv'), hint, path); } catch (e) { } }
+  } catch (e) { logErr(e, 'open ' + name); }
+  return _intake(file, hint, path);
+};
 </script>
 </body></html>
