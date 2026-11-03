@@ -746,14 +746,16 @@ AD.auditEbay = function (txn, orders, ctx) {
     let hit = 0, tried = 0;
     OL.forEach(o => { if (o.costSrc !== 'VA sheet' || !o.cost) return; tried++; const j = aeRows.find(x => !used.has(x.k) && Math.abs(-x.r.amount - o.cost) <= Math.max(3, Math.round(o.cost * 0.03)) && within(x.r.date, o.date, -3, 7)); if (j) { used.add(j.k); hit++; o.costProof = j.r.src + ' ' + j.r.date; } else o.flags.push('Cost not found on card / bank statement'); });
     const aeRefunds = rowsAll.filter(r => r.amount > 0 && /ali\s*express|alipay/i.test(r.desc));
-    aeMatch = { tried, hit, refunds: aeRefunds.reduce((a, r) => a + r.amount, 0), nRefunds: aeRefunds.length };
+    const inM = aeRefunds.filter(r => r.date && txn.month && r.date.slice(0, 7) === txn.month);
+    aeMatch = { tried, hit, refunds: aeRefunds.reduce((a, r) => a + r.amount, 0), nRefunds: aeRefunds.length, refundsInMonth: inM.reduce((a, r) => a + r.amount, 0), nRefundsInMonth: inM.length };
   }
-  const profit = S.net - cogs;
+  const supplierRefunds = aeMatch && ctx.useSupplierRefunds !== false ? aeMatch.refundsInMonth || 0 : 0;
+  const profit = S.net - cogs + supplierRefunds;
   const health = { heldPct: S.gross ? Math.round(1000 * heldNo / S.gross) / 10 : 0, inad: z('inad'), below: z('below'), refundRate: S.gross ? Math.round(-1000 * (z('refunds') + z('claims')) / S.gross) / 10 : 0, adsPct: S.gross ? Math.round(1000 * z('ads') / S.gross) / 10 : 0 };
   return {
     seller: txn.seller, month: txn.month, start: txn.start, end: txn.end, lines: L.length, blocks, netFail, failBlocks, sums: S, otherFeeKinds, unknownTypes: unknown,
     cash: { opening, net: S.net, holds: S.holds, payouts: S.payouts, nPayouts: z('nPayouts'), later, held: heldNo, diff: cashDiff, heldOrders },
-    plCheck, orMatch, sites, orders: OL, cogs, costKnown, nCostMissing, profit, health, payMatch, aeMatch
+    plCheck, orMatch, sites, orders: OL, cogs, supplierRefunds, costKnown, nCostMissing, profit, health, payMatch, aeMatch
   };
 };
 function within(d, ref, lo, hi) { if (!d || !ref) return false; const a = Date.parse(d), b = Date.parse(ref); const k = (a - b) / 864e5; return k >= lo && k <= hi; }
@@ -763,8 +765,11 @@ AD.buildCosts = function (vaRows, stockRows) {
   const byOrder = new Map();
   (vaRows || []).forEach(r => {
     const x = byOrder.get(r.order);
-    if (!x) { byOrder.set(r.order, Object.assign({}, r)); return; }
-    if (!x.cost && r.cost) { Object.assign(x, r, { conflict: x.conflict }); }
+    if (!x) { byOrder.set(r.order, Object.assign({}, r, { aes: r.ae ? [r.ae] : [], parts: 1 })); return; }
+    // one eBay order bought as two or more supplier orders (different AliExpress order IDs, or different items): add the costs up
+    const otherBuy = (r.ae && x.aes.length && !x.aes.includes(r.ae)) || (r.sku && x.sku && r.sku !== x.sku && r.src === x.src);
+    if (!x.cost && r.cost) { Object.assign(x, r, { conflict: x.conflict, aes: x.aes.concat(r.ae && !x.aes.includes(r.ae) ? [r.ae] : []), parts: x.parts }); }
+    else if (x.cost && r.cost && otherBuy) { x.cost += r.cost; x.parts++; if (r.ae && !x.aes.includes(r.ae)) x.aes.push(r.ae); x.ae = x.aes.join(' + '); if (r.qty && x.qty) x.qty += r.qty; x.summed = true; }
     else if (x.cost && r.cost && x.cost !== r.cost) x.conflict = true;
     if (!x.ae && r.ae) x.ae = r.ae; if (!x.trk && r.trk) x.trk = r.trk;
   });
@@ -808,6 +813,7 @@ AD.ISSUES = {
   'Unknown file': { sev: 'grey', next: 'Open Set aside and choose what this file is, or ignore it.', role: 'Owner' },
   'Wrong folder': { sev: 'warn', next: 'The file belongs to another account or month. The tool placed it by what is inside the file.', role: 'VA' },
   'Duplicate file': { sev: 'grey', next: 'Nothing to do. The same file was uploaded twice and counted once.', role: 'VA' },
+  'Numbers changed after lock': { sev: 'bad', next: 'A file for this month changed after it was locked. The locked numbers are kept; open the month, check the new file, then unlock and lock again if the new numbers are right.', role: 'Owner' },
   'Part of the month missing': { sev: 'bad', next: 'The report does not cover the full month. Download it again for the 1st to the last day.', role: 'VA' }
 };
 AD.issuesFor = function (acctName, month, A, extra) {
@@ -856,7 +862,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '1.7.0';
+const APPV = '1.8.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -979,11 +985,12 @@ async function intake(file, hint = {}, path = '') {
   if (ing.type === 'image') rec.img = await toDataURL(file);
   if (ing.type === 'pdf' && u8.length < 25e6) rec.raw = await toDataURL(new Blob([u8], { type: 'application/pdf' }));
   autoMap(rec);
+  splitByMonth(rec);
   place(rec);
   // duplicates by content period (newer download replaces older)
   rec.parts.forEach((p, i) => {
     if (p.kind !== 'ebay_txn' && p.kind !== 'ebay_orders') return;
-    FILES.forEach(f => f.parts.forEach(q => { if (f !== rec && q.kind === p.kind && q.acct === p.acct && q.month === p.month && !q.replacedBy) { if (K.locks[p.acct + '|' + p.month]) { p.replacedBy = 'locked'; p.notes.push({ t: 'grey', m: `${MLL(p.month)} is locked, so the locked numbers stay. Unlock the month to use this newer report.` }); } else { q.replacedBy = rec.id; DB.put('files', f.id, f); } } }));
+    FILES.forEach(f => f.parts.forEach(q => { if (f !== rec && q.kind === p.kind && q.acct === p.acct && q.month === p.month && !q.replacedBy && covers(p, q)) { if (K.locks[p.acct + '|' + p.month]) { p.replacedBy = 'locked'; p.notes.push({ t: 'grey', m: `${MLL(p.month)} is locked, so the locked numbers stay. Unlock the month to use this newer report.` }); } else { q.replacedBy = rec.id; DB.put('files', f.id, f); } } }));
   });
   FILES.push(rec); await DB.put('files', id, rec).catch(e => logErr(e, 'save file'));
   replaceWaiting(); if (autoMerge()) rec.msgsExtra = 'Two copies of the same account were joined into one.';
@@ -1138,16 +1145,61 @@ function costsFor(acctId) {
   const si = K.stockIn.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(s => ({ sku: s.sku, cost: s.cost, tab: 'confirmed stock in' }));
   return AD.buildCosts(va, stock.concat(si));
 }
+// ---------- reports of any date range ----------
+// A report that covers more than one month is cut into one part per month; two reports for parts of the same month are joined.
+const lastDay = m => `${m}-${String(new Date(+m.slice(0, 4), +m.slice(5, 7), 0).getDate()).padStart(2, '0')}`;
+const fullMonth = (s, e, m) => !!s && !!e && s <= m + '-01' && e >= lastDay(m);
+function covers(p, q) { // does the new part p hold everything of the old part q?
+  if (p.kind === 'ebay_txn') { if (!p.start || !p.end || !q.start || !q.end) return true; return p.start <= q.start && p.end >= q.end; }
+  if (p.kind === 'ebay_orders') { const s = new Set((p.orders || []).map(o => o.order)); return (q.orders || []).every(o => s.has(o.order)); }
+  return true;
+}
+function splitByMonth(rec) {
+  const out = [];
+  rec.parts.forEach(p => {
+    if (p.kind === 'ebay_txn' && p.lines && p.lines.length) {
+      const by = {}; p.lines.forEach(l => { const m = l.date ? AD.monthOf(l.date) : null; (by[m] = by[m] || []).push(l); });
+      const ms = Object.keys(by).filter(m => m !== 'null' && m); if (ms.length < 2) { out.push(p); return; }
+      const nul = by.null || []; const big = ms.sort((a, b) => by[b].length - by[a].length)[0];
+      ms.sort().forEach(m => { const L = by[m].concat(m === big ? nul : []); out.push(Object.assign({}, p, { lines: L, count: L.length, month: m, start: p.start && p.start > m + '-01' ? p.start : m + '-01', end: p.end && p.end < lastDay(m) ? p.end : lastDay(m), notes: [{ t: 'grey', m: `This report covers ${p.start || '?'} to ${p.end || '?'}. Its ${MLL(m)} lines are used for ${MLL(m)}.` }], splitOf: `${p.start}…${p.end}` })); });
+      return;
+    }
+    if (p.kind === 'ebay_orders' && p.orders && p.orders.length) {
+      const by = {}; p.orders.forEach(o => { const m = o.sale ? AD.monthOf(o.sale) : null; (by[m] = by[m] || []).push(o); });
+      const ms = Object.keys(by).filter(m => m !== 'null' && m); if (ms.length < 2 || ms.filter(m => by[m].length >= 3).length < 2) { out.push(p); return; }
+      const nul = by.null || []; const big = ms.sort((a, b) => by[b].length - by[a].length)[0];
+      ms.sort().forEach(m => { const O = by[m].concat(m === big ? nul : []); out.push(Object.assign({}, p, { orders: O, count: O.length, month: m, notes: [{ t: 'grey', m: `Orders report with more than one month: its ${MLL(m)} orders are used for ${MLL(m)}.` }], splitOf: 'orders' })); });
+      return;
+    }
+    out.push(p);
+  });
+  rec.parts = out;
+}
+const lineKey = l => [l.date, l.type, l.order, l.net, l.payId, l.desc, l.item, l.grossRaw, l.qty, l.sku].join('|');
+function txnMerged(acctId, month) {
+  const P = activeParts('ebay_txn').filter(p => p.acct === acctId && p.month === month && !p.replacedBy).sort((x, y) => (y.lines || []).length - (x.lines || []).length || y._file.added.localeCompare(x._file.added));
+  if (P.length < 2) return P[0] || null;
+  const have = {}, lines = [];
+  P.forEach(p => { const cnt = {}; p.lines.forEach(l => { const k = lineKey(l); cnt[k] = (cnt[k] || 0) + 1; if (cnt[k] > (have[k] || 0)) { have[k] = cnt[k]; lines.push(l); } }); });
+  const s = P.map(p => p.start).filter(Boolean).sort()[0], e = P.map(p => p.end).filter(Boolean).sort().slice(-1)[0];
+  return Object.assign({}, P[0], { lines, start: s, end: e, count: lines.length, nFiles: P.length, _file: P[0]._file, _files: P.map(p => p._file.name) });
+}
+function ordMerged(acctId, month) {
+  const P = activeParts('ebay_orders').filter(p => p.acct === acctId && p.month === month && !p.replacedBy).sort((x, y) => y._file.added.localeCompare(x._file.added));
+  if (P.length < 2) return P[0] || null;
+  const m = new Map(); P.slice().reverse().forEach(p => p.orders.forEach(o => m.set(o.order, o)));
+  const orders = [...m.values()]; return Object.assign({}, P[0], { orders, count: orders.length, nFiles: P.length });
+}
 function getAudit(acctId, month) {
   const key = acctId + '|' + month; if (CACHE.has(key)) return CACHE.get(key);
   const a = acctById(acctId); let res = null;
   try {
-    const txn = activeParts('ebay_txn').filter(p => p.acct === acctId && p.month === month && !p.replacedBy).sort((x, y) => y._file.added.localeCompare(x._file.added))[0];
-    const ord = activeParts('ebay_orders').filter(p => p.acct === acctId && p.month === month && !p.replacedBy).sort((x, y) => y._file.added.localeCompare(x._file.added))[0];
+    const txn = txnMerged(acctId, month);
+    const ord = ordMerged(acctId, month);
     const market = activeParts('market_sales').filter(p => p.acct === acctId && p.month === month);
     if (txn) {
       const A = AD.auditEbay(txn, ord || null, { costs: costsFor(acctId), statements: stmtsFor(txn, month), dropship: a && a.type !== 'Own stock', ae: activeParts('ae_orders').flatMap(p => p.rows.map(r => Object.assign({}, r))) });
-      A.txnFile = txn._file.name; A.ordFile = ord ? ord._file.name : null; A.kind = 'ebay';
+      A.txnFile = txn._file.name; A.ordFile = ord ? ord._file.name : null; A.kind = 'ebay'; A.nTxnFiles = txn.nFiles || 1; A.nOrdFiles = ord ? ord.nFiles || 1 : 0;
       res = A;
     } else if (market.length) {
       const rows = market.flatMap(p => p.rows); const sales = rows.reduce((s, r) => s + r.amount, 0), fees = rows.reduce((s, r) => s + r.fee, 0);
@@ -1162,7 +1214,7 @@ function steps(acctId, month) {
   const has = k => activeParts(k).some(p => p.acct === acctId && p.month === month && !p.replacedBy);
   const hasVA = activeParts('va_sheet').some(p => p.acct === acctId);
   const hasStock = activeParts('stock_cost').length > 0 || K.stockIn.length > 0;
-  const _t = activeParts('ebay_txn').find(p => p.acct === acctId && p.month === month && !p.replacedBy); const hasStmt = _t ? stmtsFor(_t, month).length > 0 : false;
+  const _t = txnMerged(acctId, month); const hasStmt = _t ? stmtsFor(_t, month).length > 0 : false;
   const shot = K.shots[acctId + '|' + month];
   const lock = K.locks[acctId + '|' + month];
   const open = issuesAll().filter(i => i.acctId === acctId && i.month === month && isOpen(i));
@@ -1188,7 +1240,9 @@ function steps(acctId, month) {
 // ---------- issues ----------
 function extraIssues(acctId, month) {
   const X = [], a = acctById(acctId);
-  activeParts().filter(p => p.acct === acctId && p.month === month).forEach(p => (p.notes || []).filter(n => n.issue).forEach(n => X.push({ kind: n.issue, ref: p._file.name, amt: null, detail: n.m })));
+  const _mt = txnMerged(acctId, month), _full = _mt && fullMonth(_mt.start, _mt.end, month);
+  { const lk = K.locks[acctId + '|' + month], A = getAudit(acctId, month); if (lk && A && A.sums && lk.net != null && (Math.abs(A.sums.net - lk.net) > 1 || Math.abs(A.profit - lk.profit) > 1)) X.push({ kind: 'Numbers changed after lock', ref: 'Locked ' + String(lk.at || '').slice(0, 10), amt: A.profit - lk.profit, detail: `Locked: eBay net ${fmt(lk.net)}, profit ${fmt(lk.profit)}. Now: eBay net ${fmt(A.sums.net)}, profit ${fmt(A.profit)}.` }); }
+  activeParts().filter(p => p.acct === acctId && p.month === month && !p.replacedBy).forEach(p => (p.notes || []).filter(n => n.issue && !(_full && n.issue === 'Part of the month missing')).forEach(n => X.push({ kind: n.issue, ref: p._file.name, amt: null, detail: n.m })));
   const A = getAudit(acctId, month);
   if (A && A.kind === 'ebay') {
     if (!A.ordFile && !(K.skips || {})[acctId + '|' + month + '|ord']) X.push({ kind: 'Missing file', ref: 'eBay Orders report', amt: null });
@@ -1337,7 +1391,9 @@ function repairOrphans() {
 // a statement is used for an account only when at least one of that account's payouts is in it
 function stmtsFor(txn, month) {
   const pays = txn.lines.filter(l => l.type === 'Payout').map(l => ({ a: -l.net, d: l.date }));
-  return activeParts('statement').filter(s => (!s.end || !s.start || (s.start <= month + '-31' && s.end >= month + '-01')) && s.rows.some(r => pays.some(p => Math.abs(r.amount - p.a) <= 1 && Math.abs(Date.parse(r.date) - Date.parse(p.d)) <= 7 * 864e5)));
+  const hit = s => s.rows.some(r => pays.some(p => Math.abs(r.amount - p.a) <= 1 && Math.abs(Date.parse(r.date) - Date.parse(p.d)) <= 7 * 864e5));
+  return activeParts('statement').filter(s => (!s.end || !s.start || (s.start <= month + '-31' && s.end >= month + '-01')) && hit(s))
+    .concat(activeParts('stmt_image').filter(s => s.rows && s.rows.length && ((s.acct === txn.acct && s.month === month) || hit(s))));
 }
 
 /* Audit Desk — screens */
@@ -1524,13 +1580,13 @@ T.summary = (a, m, A) => {
   const checks = [[A.netFail === 0, `eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}`], [Math.abs(A.cash.diff) <= 1, `Cash balances: difference ${fmt(A.cash.diff)}`], [Math.abs(A.plCheck) <= 50, `Profit & loss ties to eBay net${A.plCheck ? ` (${fmt(A.plCheck)} currency rounding)` : ''}`], [!A.orMatch || A.orMatch.pct === 100, A.orMatch ? `Orders report matches ${A.orMatch.pct}% (${A.orMatch.inOr} orders)` : 'Orders report not uploaded yet'], [!A.nCostMissing, A.nCostMissing ? `${A.nCostMissing} orders have no cost yet` : `Cost found for all ${A.costKnown} orders`]];
   if (A.payMatch) checks.push([A.payMatch.found === A.payMatch.total, `Payouts found in bank: ${A.payMatch.found} of ${A.payMatch.total}`]);
   if (A.aeMatch) checks.push([A.aeMatch.hit === A.aeMatch.tried, `AliExpress costs found on card / bank: ${A.aeMatch.hit} of ${A.aeMatch.tried}`]);
-  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m])}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
+  return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month, plus AliExpress refunds that reached the card / bank this month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m])}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
   ${A.nCostMissing ? `<div class="check w">Profit is not final: ${A.nCostMissing} orders have no cost. <button class="btn sm" data-act="ofl" data-v="No cost found">Show them</button></div>` : ''}
   <div class="card"><h2>Checks</h2><div class="list">${checks.map(([ok, t]) => `<div class="li"><div class="ic i-${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'}</div><div class="grow">${esc(t)}</div></div>`).join('')}</div></div>`;
 };
 T.pnl = (a, m, A) => {
   const z = k => A.sums[k] || 0;
-  const R = [['sec', 'Income'], ['', 'Sales (items + postage)', z('gross')], ['', 'Refunds to buyers', z('refunds')], ['', 'Claims and disputes', z('claims') + z('disputes')], ['sec', 'eBay fees'], ['', 'Final value fees', -z('fvf')], ['', 'Regulatory operating fee', -z('reg')], ['', 'International fee', -z('intl')], ['', 'Item Not As Described fee', -z('inad')], ['', 'Below Standard fee', -z('below')], ['', 'Fee credits on refunds', z('feeCredits')], ['', 'Final value fee credits (separate lines)', z('fvfCreditStandalone')], ['', 'Insertion fees', -z('insertion')], ['', 'Promoted Listings fees', -z('ads')], ['', 'Promoted Listings credits', z('adsCredit')], ['', 'Store subscription', -z('subscription')], ['', 'Other account fees', -z('otherFees')], ['', 'Postage labels bought on eBay', -z('postage')], ['', 'Other lines', z('otherLines')], ['tot', 'eBay net (matches the Transaction report)', z('net')], ['', 'Cost of goods sold', -A.cogs], ['tot', 'Profit', A.profit]];
+  const R = [['sec', 'Income'], ['', 'Sales (items + postage)', z('gross')], ['', 'Refunds to buyers', z('refunds')], ['', 'Claims and disputes', z('claims') + z('disputes')], ['sec', 'eBay fees'], ['', 'Final value fees', -z('fvf')], ['', 'Regulatory operating fee', -z('reg')], ['', 'International fee', -z('intl')], ['', 'Item Not As Described fee', -z('inad')], ['', 'Below Standard fee', -z('below')], ['', 'Fee credits on refunds', z('feeCredits')], ['', 'Final value fee credits (separate lines)', z('fvfCreditStandalone')], ['', 'Insertion fees', -z('insertion')], ['', 'Promoted Listings fees', -z('ads')], ['', 'Promoted Listings credits', z('adsCredit')], ['', 'Store subscription', -z('subscription')], ['', 'Other account fees', -z('otherFees')], ['', 'Postage labels bought on eBay', -z('postage')], ['', 'Other lines', z('otherLines')], ['tot', 'eBay net (matches the Transaction report)', z('net')], ['', 'Cost of goods sold', -A.cogs], ['', 'AliExpress refunds received (from the statement)', A.supplierRefunds || 0], ['tot', 'Profit', A.profit]];
   const kinds = Object.entries(A.otherFeeKinds).sort((x, y) => x[1] - y[1]);
   return `<div class="card"><div class="tw"><table><tbody>${R.filter(r => r[0] || r[2]).map(r => r[0] === 'sec' ? `<tr class="sec"><td colspan="2">${r[1]}</td></tr>` : `<tr class="${r[0]}"><td>${r[1]}</td><td class="r">${money(r[2])}</td></tr>`).join('')}</tbody></table></div><p class="note">Not income, so not counted: eBay-collected tax ${fmt(A.orMatch ? A.orMatch.tax : z('tax'))}${A.orMatch ? `, Buyer Protection fee ${fmt(A.orMatch.bp)}` : ''}.</p></div>
   ${kinds.length ? `<div class="card"><h2>Account-level fee lines</h2><div class="tw"><table><thead><tr><th>Description from eBay</th><th class="r">Amount</th></tr></thead><tbody>${kinds.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r">${money(v)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
@@ -1735,7 +1791,7 @@ function shotModal() {
 }
 function orderDrawer(o) {
   const A = getAudit(S.acct, S.month); const O = A.orders.find(x => x.order === o); if (!O) return;
-  const txn = activeParts('ebay_txn').find(p => p.acct === S.acct && p.month === S.month && !p.replacedBy);
+  const txn = txnMerged(S.acct, S.month);
   const lines = txn ? txn.lines.filter(l => l.order === o) : [];
   layer(`<div class="row between"><h2>Order ${esc(o)}</h2><button class="btn sm" data-act="close">Close</button></div><div class="note">${esc(O.title)}</div>
   <div class="calc"><span class="l">Sales</span>${money(O.gross)}<span class="l">Fees + ads</span>${money(-O.fees - O.ads)}<span class="l">Refund / claim</span>${money(O.refund)}<span class="l">eBay net</span>${money(O.net)}<span class="l">Cost (${esc(O.costSrc || 'not found')})</span>${O.cost !== null ? money(O.cost) : '–'}<span class="l tt">Profit</span><span class="tt">${O.profit !== null ? money(O.profit) : '–'}</span></div>
@@ -1767,7 +1823,7 @@ function weeklyMessage() {
 }
 
 // ---------- lock, history (archive) ----------
-function skuSales(A) { const s = {}; const txn = activeParts('ebay_txn').find(p => p.acct === S.acct && p.month === S.month && !p.replacedBy); if (txn) txn.lines.forEach(l => { if (l.type === 'Order' && l.item && l.sku && /^B-/i.test(l.sku)) s[l.sku] = (s[l.sku] || 0) + (l.qty || 0); }); return s; }
+function skuSales(A) { const s = {}; const txn = txnMerged(S.acct, S.month); if (txn) txn.lines.forEach(l => { if (l.type === 'Order' && l.item && l.sku && /^B-/i.test(l.sku)) s[l.sku] = (s[l.sku] || 0) + (l.qty || 0); }); return s; }
 async function doLock(note) {
   const A = getAudit(S.acct, S.month); const k = S.acct + '|' + S.month;
   K.locks[k] = { at: new Date().toISOString(), by: K.prefs.owner, note: note || '', net: A.sums.net, profit: A.profit, split: JSON.parse(JSON.stringify(splitRows(acctById(S.acct)))), shares: splitCalc(acctById(S.acct), A.profit).total, cogs: A.cogs, gross: A.sums.gross || 0, skuSales: skuSales(A) };
@@ -1845,7 +1901,7 @@ function workbook(a, m, A) {
   const X = XLSX.utils, wb = X.book_new(), p = v => v == null ? '' : Math.round(v) / 100, z = k => A.sums[k] || 0;
   const sum = [['Audit Desk report'], ['Account', a.name], ['Seller ID', a.seller], ['Month', MLL(m)], ['Period in report', `${A.start || ''} to ${A.end || ''}`], ['Made on', new Date().toLocaleString('en-GB')], [], ['Sales (gross)', p(z('gross'))], ['eBay net', p(z('net'))], ['Cost of goods', p(A.cogs)], ['Profit', p(A.profit)], ...(() => { const c = splitCalc(a, A.profit, K.locks[a.id + '|' + m]); return c.rows.length ? [...c.rows.map(r => [splitLabel(r), p(r.amt)]), ['Left for you', p(c.left)]] : []; })(), ['Orders', z('orders')], ['Units', z('units')], ['Held by eBay', p(A.cash.held)], ['Orders with no cost', A.nCostMissing], [], ['Checks'], ['eBay maths lines that do not add up', A.netFail], ['Cash difference', p(A.cash.diff)], ['P&L tie difference (currency rounding)', p(A.plCheck)], ['Orders report match %', A.orMatch ? A.orMatch.pct : 'no report']];
   X.book_append_sheet(wb, X.aoa_to_sheet(sum), 'Summary');
-  const pl = [['Line', 'Amount (£)'], ['Sales', p(z('gross'))], ['Refunds', p(z('refunds'))], ['Claims and disputes', p(z('claims') + z('disputes'))], ['Final value fees', p(-z('fvf'))], ['Regulatory operating fee', p(-z('reg'))], ['International fee', p(-z('intl'))], ['Item Not As Described fee', p(-z('inad'))], ['Below Standard fee', p(-z('below'))], ['Fee credits on refunds', p(z('feeCredits'))], ['Final value fee credits', p(z('fvfCreditStandalone'))], ['Insertion fees', p(-z('insertion'))], ['Promoted Listings fees', p(-z('ads'))], ['Promoted Listings credits', p(z('adsCredit'))], ['Store subscription', p(-z('subscription'))], ['Other account fees', p(-z('otherFees'))], ['Postage labels', p(-z('postage'))], ['Other lines', p(z('otherLines'))], ['eBay net', p(z('net'))], ['Cost of goods sold', p(-A.cogs)], ['Profit', p(A.profit)]];
+  const pl = [['Line', 'Amount (£)'], ['Sales', p(z('gross'))], ['Refunds', p(z('refunds'))], ['Claims and disputes', p(z('claims') + z('disputes'))], ['Final value fees', p(-z('fvf'))], ['Regulatory operating fee', p(-z('reg'))], ['International fee', p(-z('intl'))], ['Item Not As Described fee', p(-z('inad'))], ['Below Standard fee', p(-z('below'))], ['Fee credits on refunds', p(z('feeCredits'))], ['Final value fee credits', p(z('fvfCreditStandalone'))], ['Insertion fees', p(-z('insertion'))], ['Promoted Listings fees', p(-z('ads'))], ['Promoted Listings credits', p(z('adsCredit'))], ['Store subscription', p(-z('subscription'))], ['Other account fees', p(-z('otherFees'))], ['Postage labels', p(-z('postage'))], ['Other lines', p(z('otherLines'))], ['eBay net', p(z('net'))], ['Cost of goods sold', p(-A.cogs)], ['AliExpress refunds received (statement)', p(A.supplierRefunds || 0)], ['Profit', p(A.profit)]];
   X.book_append_sheet(wb, X.aoa_to_sheet(pl), 'Profit & loss');
   const c = A.cash; X.book_append_sheet(wb, X.aoa_to_sheet([['Line', 'Amount (£)'], ['Earlier money in this month’s payouts', p(c.opening)], ['eBay net this month', p(c.net)], ['Holds (net)', p(c.holds)], ['Payouts to bank', p(-c.payouts)], ['Paid out next month', p(-c.later)], ['Still held by eBay', p(-c.held)], ['Difference', p(c.diff)], [], ['Payout ID', 'Date', 'Amount', 'Found in bank'], ...(A.payMatch ? A.payMatch.list.map(x => [x.id, x.date, p(x.amount), x.found ? x.found.src + ' ' + x.found.date : 'Not found']) : [])]), 'Cash & payouts');
   X.book_append_sheet(wb, X.aoa_to_sheet([['Order', 'Date', 'Site', 'SKU', 'Qty', 'Sales', 'Fees', 'Ads', 'Refund', 'eBay net', 'Cost', 'Cost source', 'AliExpress ID', 'Profit', 'Tracking', 'Notes'], ...A.orders.map(o => [o.order, o.date, o.site, o.sku, o.qty, p(o.gross), p(-o.fees), p(-o.ads), p(o.refund), p(o.net), p(o.cost), o.costSrc, o.ae, p(o.profit), o.trk, o.flags.join('; ')])]), 'Orders');
@@ -2537,6 +2593,23 @@ function classifyText(t) {
   if (t.replace(/\s/g, '').length > 80) return 'other_pic';
   return null; // could not tell: keep what it was
 }
+// statement lines from a picture / PDF: date, amount (+ in, − out) and the words, so payouts and AliExpress costs can be ticked
+function stmtRowsFromText(t) {
+  const rows = [];
+  t.split(/\n+/).forEach(line => {
+    const d = ocrDates(line); if (!d.length) return;
+    const ms = []; let m; MONEY_RE.lastIndex = 0; while ((m = MONEY_RE.exec(line))) ms.push({ v: +(m[3].replace(/[,\s]/g, '') + '.' + m[4]), neg: !!(m[1] || m[2]), i: m.index });
+    if (!ms.length) return;
+    const x = ms[0]; const low = line.toLowerCase();
+    const outW = /card payment|purchase|paid to|debit|money out|ali\s*express|alipay|withdraw|direct debit|standing order|sent to|transfer to|\bfee\b/.test(low);
+    const inW = /received|from ebay|ebay|payout|money in|refund|credit|paid in|deposit/.test(low);
+    let sign = x.neg ? -1 : outW && !/refund/.test(low) ? -1 : inW ? 1 : 1;
+    if (/refund/.test(low) && /ali\s*express|alipay/.test(low)) sign = 1;
+    const desc = line.replace(MONEY_RE, ' ').replace(/\b\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}\b/g, ' ').replace(/\s+/g, ' ').trim();
+    rows.push({ date: d[0], amount: Math.round(sign * x.v * 100), desc });
+  });
+  return rows;
+}
 function acctFromText(t) {
   const a = guessAcct(t); if (a) return a;
   const n = AD.norm(t); let best = null, bl = 0;
@@ -2556,6 +2629,7 @@ function ocrApply(rec, text) {
     else { p.kind = kind; p.label = KIND_NAME[kind]; p.check = true; p.byOcr = true; if (kind === 'other_pic') { p.notNeeded = true; } else p.notNeeded = false; }
   }
   if (p.kind === 'other_pic') return;
+  if (p.kind === 'stmt_image') { p.rows = stmtRowsFromText(text); p.source = rec.type === 'pdf' ? 'Statement PDF' : 'Statement picture'; p.count = p.rows.length; }
   const a = acctFromText(text), dates = ocrDates(text), m = ocrMonth(dates);
   if (a && !chosen) {
     if (h.acct && h.acct !== a.id) p.notes = (p.notes || []).concat([{ t: 'warn', m: `This picture shows ${a.name}, but it was added on the ${acctById(h.acct) ? acctById(h.acct).name : ''} page. Kept where you added it; change it in Please check if needed.` }]);
@@ -2589,6 +2663,7 @@ async function ocrOne(rec) {
   await DB.put('files', rec.id, rec).catch(() => { });
 }
 async function ocrAll() {
+  FILES.forEach(f => { const p = f.parts && f.parts[0]; if (p && p.kind === 'stmt_image' && !p.rows && f.ocr && f.ocr.text) { p.rows = stmtRowsFromText(f.ocr.text); p.source = f.type === 'pdf' ? 'Statement PDF' : 'Statement picture'; p.count = p.rows.length; DB.put('files', f.id, f).catch(() => { }); invalidate(); } });
   if (OCR.busy || OCR.failed || !ocrBase()) return; OCR.busy = true;
   try {
     let n = 0;
