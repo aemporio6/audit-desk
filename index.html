@@ -805,14 +805,21 @@ AD.auditEbay = function (txn, orders, ctx) {
     const rowsAll = stm.flatMap(s => s.rows.map(r => Object.assign({ src: s.source }, r)));
     const used = new Set();
     const payouts = L.filter(l => l.type === 'Payout');
-    const pm = payouts.map(p => { const amt = -p.net; const i = rowsAll.findIndex((r, k) => !used.has(k) && Math.abs(r.amount - amt) <= 1 && within(r.date, p.date, -1, 6)); if (i > -1) used.add(i); return { id: p.payId, date: p.date, amount: amt, found: i > -1 ? rowsAll[i] : null }; });
+    // payouts <-> bank lines, and AliExpress costs <-> card lines, both through the one reconcile engine
+    const free = () => rowsAll.map((r, k) => ({ r, k })).filter(x => !used.has(x.k));
+    const pr = AD.reconcile(payouts.map((p, i) => ({ id: 'p' + i, date: p.date, amount: -p.net })), free().map(x => ({ id: 'r' + x.k, date: x.r.date, amount: x.r.amount })), { tol: 1, from: -1, to: 6 });
+    const pHit = new Map(); pr.matches.forEach(m => { if (m.l.length === 1 && m.r.length === 1) pHit.set(m.l[0], +m.r[0].slice(1)); });
+    const pm = payouts.map((p, i) => { const k = pHit.get('p' + i); if (k != null) used.add(k); return { id: p.payId, date: p.date, amount: -p.net, found: k != null ? rowsAll[k] : null }; });
     payMatch = { list: pm, found: pm.filter(x => x.found).length, total: pm.length };
-    const aeRows = rowsAll.map((r, k) => ({ r, k })).filter(x => x.r.amount < 0 && /ali\s*express|alipay|aliexpress|alibaba/i.test(x.r.desc));
-    let hit = 0, tried = 0, fxDiff = 0;
-    OL.forEach(o => { if (o.costSrc !== 'VA sheet' || !o.cost) return; tried++; const j = aeRows.find(x => !used.has(x.k) && Math.abs(-x.r.amount - o.cost) <= Math.max(3, Math.round(o.cost * 0.03)) && within(x.r.date, o.date, -3, 7)); if (j) { used.add(j.k); hit++; o.costProof = j.r.src + ' ' + j.r.date; o.cardPaid = -j.r.amount; fxDiff += -j.r.amount - o.cost; } else o.flags.push('Cost not found on card / bank statement'); });
+    const aeRows = rowsAll.map((r, k) => ({ r, k })).filter(x => x.r.amount < 0 && !used.has(x.k) && /ali\s*express|alipay|aliexpress|alibaba/i.test(x.r.desc));
+    let hit = 0, tried = 0, fxDiff = 0, ambiguous = 0;
+    const costOrders = OL.map((o, i) => ({ o, i })).filter(x => x.o.costSrc === 'VA sheet' && x.o.cost);
+    const cr = AD.reconcile(costOrders.map(x => ({ id: 'o' + x.i, date: x.o.date, amount: x.o.cost })), aeRows.map(x => ({ id: 'c' + x.k, date: x.r.date, amount: -x.r.amount })), { tol: 3, tolPct: 0.03, from: -3, to: 7 });
+    const cHit = new Map(); cr.matches.forEach(m => { if (m.l.length === 1 && m.r.length === 1) cHit.set(m.l[0], { k: +m.r[0].slice(1), amb: m.status === 'review' }); });
+    costOrders.forEach(({ o, i }) => { tried++; const h = cHit.get('o' + i); if (h) { const row = rowsAll[h.k]; used.add(h.k); hit++; if (h.amb) ambiguous++; o.costProof = row.src + ' ' + row.date; o.cardPaid = -row.amount; fxDiff += -row.amount - o.cost; } else o.flags.push('Cost not found on card / bank statement'); });
     const aeRefunds = rowsAll.filter(r => r.amount > 0 && /ali\s*express|alipay/i.test(r.desc));
     const inM = aeRefunds.filter(r => r.date && txn.month && r.date.slice(0, 7) === txn.month);
-    aeMatch = { tried, hit, fxDiff, refunds: aeRefunds.reduce((a, r) => a + r.amount, 0), nRefunds: aeRefunds.length, refundsInMonth: inM.reduce((a, r) => a + r.amount, 0), nRefundsInMonth: inM.length };
+    aeMatch = { tried, hit, ambiguous, fxDiff, refunds: aeRefunds.reduce((a, r) => a + r.amount, 0), nRefunds: aeRefunds.length, refundsInMonth: inM.reduce((a, r) => a + r.amount, 0), nRefundsInMonth: inM.length };
   }
   const supplierRefunds = aeMatch && ctx.useSupplierRefunds !== false ? aeMatch.refundsInMonth || 0 : 0;
   const profit = S.net - cogs + supplierRefunds;
@@ -856,8 +863,20 @@ AD.auditMarket = function (rows, ctx) {
 // Never forces an uncertain match: certain ones are "matched", unsure ones are "review", guesses are only "suggestions".
 AD.RECON_VERSION = '1.0';
 AD.RULES_VERSION = '2026.11.1'; // bump when any audit formula, sign rule or policy changes
+// The rules and file readers as plain data: what the tool decides on, in one readable, versioned list.
+AD.READER_VERSION = '1.1';
+AD.rulesData = function () {
+  return {
+    format: 'audit-desk-rules/1', engine: AD.VERSION, rules: AD.RULES_VERSION, reconcile: AD.RECON_VERSION, readers: AD.READER_VERSION,
+    money: { unit: 'integer minor units (pence / cents)', roundingRule: 'round half away from zero at the moment of reading a file; nothing is rounded afterwards' },
+    readers: R.map(f => ({ id: f.kind, label: f.label, platform: f.platform, version: AD.READER_VERSION })),
+    issues: Object.entries(AD.ISSUES).map(([name, v]) => ({ name, severity: v.sev, next: v.next, role: v.role })),
+    matching: { stages: ['manual', 'same reference', 'same amount inside date window', 'several items to one line', 'suggestion only'], defaults: { tol: 1, from: -1, to: 6, groupMax: 4, fuzzyPct: 0.01 }, aliExpressCost: { tol: 3, tolPct: 0.03, from: -3, to: 7 } }
+  };
+};
 AD.reconcile = function (left, right, o) {
-  o = Object.assign({ tol: 1, from: -1, to: 6, groupMax: 4, fuzzyPct: 0.01 }, o || {});
+  o = Object.assign({ tol: 1, tolPct: 0, from: -1, to: 6, groupMax: 4, fuzzyPct: 0.01 }, o || {});
+  const tolOf = l => Math.max(o.tol, Math.round(Math.abs(l.amount) * o.tolPct));
   const dayN = d => d ? Math.round(Date.parse(d + 'T00:00:00Z') / 864e5) : null;
   const L = (left || []).map((x, i) => Object.assign({ _k: 'L' + i }, x)).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
   const R = (right || []).map((x, i) => Object.assign({ _k: 'R' + i }, x)).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
@@ -871,11 +890,11 @@ AD.reconcile = function (left, right, o) {
   (o.manual || []).forEach(p => { const l = idOf(L, p.l), r = idOf(R, p.r); if (l && r) take([l], [r], 'Manual', 'person', 'matched'); });
   // 2. same reference on both sides and the amount agrees
   const byRef = new Map(); R.forEach(r => { const k = norm(r.ref); if (k) (byRef.get(k) || byRef.set(k, []).get(k)).push(r); });
-  L.forEach(l => { if (usedL.has(l._k) || !norm(l.ref)) return; const c = (byRef.get(norm(l.ref)) || []).filter(r => !usedR.has(r._k) && Math.abs(r.amount - l.amount) <= o.tol && !forbid.has(l.id + '||' + r.id)); if (c.length === 1) take([l], c, 'Same reference', 'exact', 'matched'); });
+  L.forEach(l => { if (usedL.has(l._k) || !norm(l.ref)) return; const c = (byRef.get(norm(l.ref)) || []).filter(r => !usedR.has(r._k) && Math.abs(r.amount - l.amount) <= tolOf(l) && !forbid.has(l.id + '||' + r.id)); if (c.length === 1) take([l], c, 'Same reference', 'exact', 'matched'); });
   // 3. same amount inside the date window (ambiguity is judged BEFORE anything is taken, so repeated equal amounts all stay "review")
   const byAmt = new Map(); R.forEach(r => { if (!usedR.has(r._k)) (byAmt.get(r.amount) || byAmt.set(r.amount, []).get(r.amount)).push(r); });
   const candOf = new Map(); const rCount = new Map();
-  L.forEach(l => { if (usedL.has(l._k)) return; const c = []; for (let a = l.amount - o.tol; a <= l.amount + o.tol; a++) (byAmt.get(a) || []).forEach(r => { if (!usedR.has(r._k) && inWin(l, r) && !forbid.has(l.id + '||' + r.id)) c.push(r); }); if (c.length) { candOf.set(l._k, c); c.forEach(r => rCount.set(r._k, (rCount.get(r._k) || 0) + 1)); } });
+  L.forEach(l => { if (usedL.has(l._k)) return; const c = []; const tl = tolOf(l); for (let a = l.amount - tl; a <= l.amount + tl; a++) (byAmt.get(a) || []).forEach(r => { if (!usedR.has(r._k) && inWin(l, r) && !forbid.has(l.id + '||' + r.id)) c.push(r); }); if (c.length) { candOf.set(l._k, c); c.forEach(r => rCount.set(r._k, (rCount.get(r._k) || 0) + 1)); } });
   L.forEach(l => {
     if (usedL.has(l._k)) return; const all = candOf.get(l._k); if (!all) return;
     const amb = all.length > 1 || all.some(r => rCount.get(r._k) > 1);
@@ -995,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.6.0';
+const APPV = '2.7.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -1066,7 +1085,7 @@ const DEFAULT_ACC = [
   { id: 'vcom', name: 'VCOM', seller: 'rumi-bazar-eu', aliases: ['BAY-101A', 'VCOM'], Team: 'Team Junaid', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Own stock', va: 'Junaid (VA)', vat: 'Not VAT registered', cf: {} },
   { id: 'com365', name: 'Com365', seller: '', aliases: ['BAY-106', 'Com365'], Team: 'Team Ahsan', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Dropship', va: 'Ahsan (VA)', vat: 'Not VAT registered', cf: {} }
 ];
-const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [], offRefunds: {}, returns: {}, people: {}, matches: {} };
+const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [], offRefunds: {}, returns: {}, people: {}, matches: {}, conflicts: [] };
 const KEYS = Object.keys(K);
 async function loadAll() {
   persisted.ok = await DB.open();
@@ -1468,6 +1487,7 @@ const headerSig = r => AD.norm((r || []).join('|')).slice(0, 400);
 function applyMap(p, kind, hrow, cols, remember) {
   const rows = p.rowsRaw || [], H = rows[hrow] || [], out = [], aside = [];
   const g = (row, k) => cols[k] > -1 ? row[cols[k]] : '';
+  const usedIx = new Set(Object.values(cols)), ux = H.map((h, i) => i).filter(i => String(H[i] || '').trim() && !usedIx.has(i)).slice(0, 15); // columns we did not read are kept, not dropped
   for (let r = hrow + 1; r < rows.length; r++) {
     const row = rows[r] || []; if (!row.some(x => String(x).trim())) continue;
     let x = null;
@@ -1476,14 +1496,14 @@ function applyMap(p, kind, hrow, cols, remember) {
     else if (kind === 'statement') { const d = AD.parseDate(g(row, 'date')), a = AD.num(g(row, 'amount')); if (d && a !== null) x = { date: d, amount: Math.round(a * 100), desc: String(g(row, 'desc') || ''), ccy: '', id: '', row: r + 1 }; }
     else if (kind === 'market_sales') { const id = String(g(row, 'order') || '').trim(); if (id) x = { order: id, amount: AD.P(g(row, 'amount')), fee: AD.P(g(row, 'fee')), date: AD.parseDate(g(row, 'date')), sku: '', qty: null }; }
     else if (kind === 'ae_orders') { const id = String(g(row, 'ae') || '').replace(/\D/g, ''); if (id.length >= 8) x = { ae: id, amount: AD.P(g(row, 'amount')), date: AD.parseDate(g(row, 'date')), status: '', order: null }; }
-    if (x) out.push(x); else aside.push({ row: r + 1, reason: 'Key column empty in this row', values: row.slice(0, 6) });
+    if (x) { x.row = r + 1; const ex = {}; ux.forEach(i => { const v = String(row[i] == null ? '' : row[i]).trim(); if (v) ex[String(H[i]).trim().slice(0, 60)] = v.slice(0, 200); }); if (Object.keys(ex).length) x.extra = ex; out.push(x); } else aside.push({ row: r + 1, reason: 'Key column empty in this row', values: row.slice(0, 6) });
   }
   Object.assign(p, { colsUsed: Object.fromEntries(Object.entries(cols).filter(([, i]) => i > -1).map(([k, i]) => [k, String(H[i] || 'column ' + (i + 1))])), kind, label: KIND_LABEL[kind] + ' (your mapping)', rows: out, count: out.length, aside, unusedCols: H.filter((h, i) => String(h).trim() && !Object.values(cols).includes(i)).map(String), needs: null, mapped: true });
   if (kind === 'statement') { const d = out.map(x => x.date).sort(); Object.assign(p, { source: 'Bank / card', start: d[0], end: d[d.length - 1], month: AD.majorityMonth(d) }); }
   if (kind === 'market_sales') { p.platform = 'Other marketplace'; p.month = AD.majorityMonth(out.map(x => x.date)); }
-  if (remember) { K.prefs.maps = K.prefs.maps || {}; K.prefs.maps[headerSig(H)] = { kind, hrow, cols }; }
+  if (remember) { K.prefs.maps = K.prefs.maps || {}; const old = K.prefs.maps[headerSig(H)] || {}; K.prefs.maps[headerSig(H)] = { kind, hrow, cols, name: old.name || (KIND_LABEL[kind] + ' · ' + H.filter(h => String(h).trim()).slice(0, 3).join(', ')), saved: old.saved || new Date().toISOString(), used: old.used || 0, headers: H.map(String).slice(0, 40) }; }
 }
-function autoMap(rec) { const M = K.prefs.maps || {}; rec.parts.forEach(p => { if (p.kind !== 'unknown' || !p.rowsRaw) return; for (const m of Object.values(M)) { const H = p.rowsRaw[m.hrow]; if (H && M[headerSig(H)] === m) { applyMap(p, m.kind, m.hrow, m.cols, false); break; } } if (p.kind === 'unknown') autoRead(p); }); }
+function autoMap(rec) { const M = K.prefs.maps || {}; rec.parts.forEach(p => { if (p.kind !== 'unknown' || !p.rowsRaw) return; for (const m of Object.values(M)) { const H = p.rowsRaw[m.hrow]; if (H && M[headerSig(H)] === m) { applyMap(p, m.kind, m.hrow, m.cols, false); m.used = (m.used || 0) + 1; m.last = new Date().toISOString(); break; } } if (p.kind === 'unknown') autoRead(p); }); }
 
 // save a file for the viewer: claude.ai downloads capability when inside the private link, else a normal download
 async function saveFile(name, data) {
@@ -2584,7 +2604,7 @@ function syncStart(fixed) {
         if (JSON.stringify(d.data) === JSON.stringify(k === 'log' ? K.log.slice(0, 200) : K[k])) { SYNC.base[k] = d.data; return; }
         const oldHist = k === 'history' ? Object.assign({}, K.history) : null;
         // both devices changed it: keep both sets of changes (3-way merge against the last shared copy)
-        if (SYNC.dirty[k] && SYNC.base[k] !== undefined) { K[k] = merge3(SYNC.base[k], K[k], d.data); SYNC.base[k] = d.data; syncPush([k]); }
+        if (SYNC.dirty[k] && SYNC.base[k] !== undefined) { CQ.on = true; CQ.list = []; try { K[k] = merge3(SYNC.base[k], K[k], d.data); } finally { CQ.on = false; } if (CQ.list.length && typeof queueConflicts === 'function') queueConflicts(k, CQ.list, 'other device'); SYNC.base[k] = d.data; syncPush([k]); }
         else { K[k] = d.data; SYNC.base[k] = d.data; SYNC.dirty[k] = false; } if (k === 'acc') { reattach(); repairOrphans(); autoMerge(); } if (oldHist) Object.keys(oldHist).filter(x => !K.history[x]).forEach(x => historyBack(x, false, true)); if (k === 'locks' || k === 'history') setTimeout(() => archiveOld(), 500);
         if (k === 'reg') Object.keys(DEFAULT_REG).forEach(x => { if (!K.reg[x]) K.reg[x] = DEFAULT_REG[x].slice(); });
         DB.put('kv', k, K[k]).catch(() => { });
@@ -2657,7 +2677,9 @@ window.addEventListener('online', () => { if (SYNC.db) Object.keys(SYNC.dirty).f
 function reattach() { FILES.forEach(f => { let ch = false; f.parts.forEach(p => { if ((p.kind === 'ebay_txn' || p.kind === 'ebay_orders') && p.seller) { const a = acctBySeller(p.seller); if (a && p.acct !== a.id) { p.acct = a.id; ch = true; } } else if (p.acct && p.acct !== '*' && !acctById(p.acct)) { p.waiting = true; p.acct = null; ch = true; } }); if (ch) DB.put('files', f.id, f); }); replaceWaiting(); }
 
 const J = v => JSON.stringify(v);
-function merge3(base, local, remote) {
+const CQ = { on: false, list: [] };
+function merge3(base, local, remote, path) {
+  path = path || [];
   if (J(local) === J(base)) return remote;
   if (J(remote) === J(base) || J(remote) === J(local)) return local;
   const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -2666,7 +2688,7 @@ function merge3(base, local, remote) {
     const byId = [...L, ...R].every(x => x && typeof x === 'object' && 'id' in x);
     if (byId) {
       const m = a => new Map(a.map(x => [x.id, x])); const bm = m(B), lm = m(L), rm = m(R); const out = [];
-      [...R.map(x => x.id), ...L.map(x => x.id).filter(id => !rm.has(id))].forEach(id => { const v = merge3(bm.get(id), lm.get(id), rm.get(id)); if (v !== undefined) out.push(v); });
+      [...R.map(x => x.id), ...L.map(x => x.id).filter(id => !rm.has(id))].forEach(id => { const v = merge3(bm.get(id), lm.get(id), rm.get(id), path.concat([{ id }])); if (v !== undefined) out.push(v); });
       return out;
     }
     const bs = new Set(B.map(J)), ls = new Set(L.map(J));
@@ -2675,9 +2697,11 @@ function merge3(base, local, remote) {
   }
   if (isObj(local) || isObj(remote)) {
     const b = isObj(base) ? base : {}, l = isObj(local) ? local : {}, r = isObj(remote) ? remote : {}; const out = {};
-    new Set([...Object.keys(l), ...Object.keys(r), ...Object.keys(b)]).forEach(key => { const v = merge3(b[key], l[key], r[key]); if (v !== undefined) out[key] = v; });
+    new Set([...Object.keys(l), ...Object.keys(r), ...Object.keys(b)]).forEach(key => { const v = merge3(b[key], l[key], r[key], path.concat([key])); if (v !== undefined) out[key] = v; });
     return out;
   }
+  // both sides changed the same value in different ways: this device's value is kept, and the difference is written down
+  if (CQ.on && J(local) !== J(remote)) CQ.list.push({ path, mine: local, theirs: remote });
   return local === undefined && base !== undefined ? undefined : local !== undefined ? local : remote;
 }
 
@@ -3949,7 +3973,7 @@ function mbMerge(m, kvM, base) {
   const all = !(m.accounts || []).length, ok = id => all || m.accounts.includes(id); const done = [], conflicts = [];
   MB_BACK.forEach(key => { const cur = K[key] || (K[key] = {}); Object.entries((kvM && kvM[key]) || {}).forEach(([k, v]) => {
     if (!ok(mbAcct(k))) return; const was = base && base[key] ? base[key][k] : undefined; if (mbJson(v) === mbJson(was)) return;
-    if (mbJson(cur[k]) === mbJson(was)) { cur[k] = v; if (!done.includes(key)) done.push(key); } else if (mbJson(cur[k]) !== mbJson(v)) conflicts.push(key + ' ' + k);
+    if (mbJson(cur[k]) === mbJson(was)) { cur[k] = v; if (!done.includes(key)) done.push(key); } else if (mbJson(cur[k]) !== mbJson(v)) { conflicts.push(key + ' ' + k); if (typeof queueConflicts === 'function') queueConflicts(key, [{ path: [k], mine: cur[k], theirs: v }], m.email); }
   }); });
   return { done, conflicts };
 }
@@ -3991,6 +4015,56 @@ Object.assign(ACT, {
   mbSync: async () => { const c = await memberSync(); toast(c && c.length ? `${c.length} change(s) from members were not taken because you changed them too.` : 'Members are up to date.'); }
 });
 
+// v2.7 — saved column mappings you can see and manage, and the "kept columns" vault.
+function mapCard() {
+  const M = K.prefs.maps || {}, L = Object.entries(M);
+  const kept = (() => { let n = 0, cols = new Set(); try { FILES.forEach(f => (f.parts || []).forEach(p => (p.rows || []).forEach(r => { if (r && r.extra) { n++; Object.keys(r.extra).forEach(c => cols.add(c)); } }))); } catch (e) { } return { n, cols: [...cols].slice(0, 12) }; })();
+  return `<div class="card"><h2>Saved column mappings ${help('When you tell the tool which column is which, it remembers it for every file with the same headings. Here you can see them and remove one if it is wrong.')}</h2>
+  ${L.length ? `<div class="tw"><table><thead><tr><th>Name</th><th>Reads as</th><th>Columns used</th><th>Used</th><th></th></tr></thead><tbody>${L.map(([k, m]) => `<tr><td><input class="in" data-act="mapRename" data-k="${esc(k)}" value="${esc(m.name || '')}"></td><td>${esc(KIND_LABEL[m.kind] || m.kind)}</td><td class="note">${esc(Object.entries(m.cols || {}).filter(([, i]) => i > -1).map(([f, i]) => f + ' = ' + ((m.headers || [])[i] || 'column ' + (+i + 1))).join(', '))}</td><td>${m.used || 0}×</td><td><button class="btn" data-act="mapDel" data-k="${esc(k)}">Remove</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="note">None yet. When a file is not recognised and you pick the columns, the choice is saved here.</p>'}
+  <p class="note">Columns the tool did not read are not thrown away: ${kept.n ? `${kept.n} rows keep their extra columns (${esc(kept.cols.join(', '))}${kept.cols.length >= 12 ? ', …' : ''}).` : 'they are kept next to each row when you map a file.'}</p></div>`;
+}
+const _vset8 = V.settings; V.settings = () => _vset8() + mapCard();
+Object.assign(ACT, {
+  mapDel: async el => { const k = el.dataset.k, m = (K.prefs.maps || {})[k]; if (!m) return; delete K.prefs.maps[k]; await save('prefs'); log('Removed saved mapping: ' + (m.name || k)); toast('Removed.', async () => { K.prefs.maps[k] = m; await save('prefs'); render(); }); render(); },
+  mapRename: async el => { const m = (K.prefs.maps || {})[el.dataset.k]; if (!m) return; m.name = (el.value || '').trim() || m.name; await save('prefs'); }
+});
+
+// ---- conflict queue: when two people / devices change the same number or status, nothing is lost silently ----
+const CQ_MONEY = new Set(['locks', 'matches', 'returns', 'offRefunds', 'expenses', 'stockIn', 'shots', 'iss', 'acc', 'history']);
+function queueConflicts(key, list, who) {
+  if (!CQ_MONEY.has(key)) return; K.conflicts = K.conflicts || [];
+  list.slice(0, 50).forEach(c => { const id = key + '|' + J(c.path); if (K.conflicts.some(x => x.id === id && x.status === 'open')) return; K.conflicts.unshift({ id, key, path: c.path, mine: c.mine === undefined ? null : c.mine, theirs: c.theirs === undefined ? null : c.theirs, who, at: new Date().toISOString(), status: 'open' }); });
+  K.conflicts = K.conflicts.slice(0, 300); save('conflicts'); log(`${list.length} difference(s) in ${key} between you and ${who}; yours kept, see Differences to check.`);
+}
+function cqSet(key, path, val) { // write a value at a path; path items are keys or {id} for list items
+  let cur = K[key]; for (let i = 0; i < path.length - 1; i++) { const p = path[i]; cur = typeof p === 'object' ? (cur || []).find(x => x.id === p.id) : cur && cur[p]; if (cur == null) return false; }
+  const last = path[path.length - 1];
+  if (typeof last === 'object') { const ix = cur.findIndex(x => x.id === last.id); if (val === null) { if (ix > -1) cur.splice(ix, 1); } else if (ix > -1) cur[ix] = val; else cur.push(val); } else if (val === null) delete cur[last]; else cur[last] = val;
+  return true;
+}
+const cqShow = v => v === null ? '(removed)' : typeof v === 'object' ? JSON.stringify(v).slice(0, 90) : String(v);
+const cqPath = c => c.key + ' › ' + c.path.map(p => typeof p === 'object' ? p.id : p).join(' › ');
+function conflictCard() {
+  const open = (K.conflicts || []).filter(c => c.status === 'open'); if (!open.length) return '';
+  return `<div class="card"><h2>Differences to check (${open.length}) ${help('Two devices or people changed the same thing in different ways. Your value is in use now. Nothing is lost: choose which one is right.')}</h2><div class="tw"><table><thead><tr><th>Where</th><th>Yours (in use)</th><th>Other (${esc(open[0].who || '')})</th><th></th></tr></thead><tbody>${open.slice(0, 30).map(c => `<tr><td class="note">${esc(cqPath(c))}</td><td>${esc(cqShow(c.mine))}</td><td>${esc(cqShow(c.theirs))}</td><td><button class="btn" data-act="cqKeep" data-id="${esc(c.id)}">Keep mine</button> <button class="btn" data-act="cqUse" data-id="${esc(c.id)}">Use theirs</button></td></tr>`).join('')}</tbody></table></div></div>`;
+}
+const _vhome8 = V.home; V.home = function () { return conflictCard() + _vhome8.apply(this, arguments); };
+const _vset8c = V.settings; V.settings = function () { return conflictCard() + _vset8c.apply(this, arguments); };
+Object.assign(ACT, {
+  cqKeep: async el => { const c = (K.conflicts || []).find(x => x.id === el.dataset.id && x.status === 'open'); if (!c) return; c.status = 'kept mine'; c.done = new Date().toISOString(); await save('conflicts'); log('Difference kept as yours: ' + cqPath(c)); render(); },
+  cqUse: async el => { const c = (K.conflicts || []).find(x => x.id === el.dataset.id && x.status === 'open'); if (!c) return; if (cqSet(c.key, c.path, c.theirs)) { c.status = 'used theirs'; c.done = new Date().toISOString(); await save(c.key, 'conflicts'); invalidate(); log('Difference: used the other value for ' + cqPath(c)); } else toast('That item is no longer there.'); render(); }
+});
+
+// ---- rules and readers shown and downloadable as data ----
+function rulesCard() {
+  const d = AD.rulesData();
+  return `<div class="card"><div class="row between"><h2>Rules and file readers ${help('Every audit rule and every file reader the tool uses, as a list you can read or save. The numbers show which version made your locked months.')}</h2><button class="btn" data-act="rulesDl">Download rules (JSON)</button></div>
+  <p class="note">Rules ${esc(d.rules)} · matching ${esc(d.reconcile)} · readers ${esc(d.readers)} · ${d.readers.length ? '' : ''}${d.issues.length} issue types</p>
+  <p class="note">File readers: ${esc(AD.rulesData().readers.map(r => r.label).join(' · '))}</p></div>`;
+}
+const _vset8r = V.settings; V.settings = () => _vset8r() + rulesCard();
+Object.assign(ACT, { rulesDl: () => saveFile('Audit Desk rules ' + AD.RULES_VERSION + '.json', new Blob([JSON.stringify(AD.rulesData(), null, 2)], { type: 'application/json' })) });
+
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
 // every screen button becomes a real link: right-click → Open in new tab / window works, and the new window stays signed in
@@ -4030,7 +4104,7 @@ ACT.anCancel = () => $$('.anBox').forEach(x => x.remove());
 
 // 2) every account dropdown gets “+ Add a new account…”
 function addAcctOptions() {
-  const ids = new Set(K.acc.map(a => a.id));
+  if (!K.acc) return; const ids = new Set(K.acc.map(a => a.id));
   $$('select').forEach(s => { if (s.dataset.list || s.id === 'acMergeTo' || s.closest('#layer') || s.querySelector('option[value="__acct"]')) return; if (![...s.options].some(o => ids.has(o.value))) return; const o = document.createElement('option'); o.value = '__acct'; o.textContent = '+ Add a new account…'; s.appendChild(o); });
 }
 let AA = null; new MutationObserver(() => { clearTimeout(AA); AA = setTimeout(addAcctOptions, 40); }).observe(document.body, { childList: true, subtree: true });
