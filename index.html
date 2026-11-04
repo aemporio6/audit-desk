@@ -940,7 +940,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.1.1';
+const APPV = '2.2.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -2279,14 +2279,37 @@ const GDRIVE = {
   }
 };
 // data the same on every device: one file "Audit Desk data.json" in the signed-in Drive
+// ---------- optional encryption of the Drive data (AES-GCM, key from a passphrase) ----------
+const ENC = { key: null, need: false, on: false, saltB64: '' };
+const u8b64 = u => { let s = ''; for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192)); return btoa(s); };
+const b64u8 = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
+async function encDerive(pass, salt) { const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']); return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' }, km, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']); }
+async function encCache() { try { if (ENC.key) localStorage.setItem('ad-ek', JSON.stringify({ salt: ENC.saltB64, raw: u8b64(new Uint8Array(await crypto.subtle.exportKey('raw', ENC.key))) })); else localStorage.removeItem('ad-ek'); } catch (e) { } }
+async function encWrap(obj, forcePlain) {
+  if (!ENC.key || forcePlain) return JSON.stringify(obj);
+  const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, ENC.key, new TextEncoder().encode(JSON.stringify(obj))));
+  return JSON.stringify({ enc: 1, v: 1, salt: ENC.saltB64, iv: u8b64(iv), ct: u8b64(ct) });
+}
+async function encUnwrap(text) {
+  let o; try { o = JSON.parse(text || '{}'); } catch (e) { return {}; }
+  if (!o || !o.enc) { ENC.on = false; ENC.need = false; return o || {}; }
+  ENC.on = true; ENC.saltB64 = o.salt;
+  if (!ENC.key) { try { const c = JSON.parse(localStorage.getItem('ad-ek') || 'null'); if (c && c.salt === o.salt) ENC.key = await crypto.subtle.importKey('raw', b64u8(c.raw), 'AES-GCM', true, ['encrypt', 'decrypt']); } catch (e) { } }
+  if (!ENC.key) { ENC.need = true; throw Object.assign(new Error('Data is locked'), { code: 'needs_pass' }); }
+  try { const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u8(o.iv) }, ENC.key, b64u8(o.ct)); ENC.need = false; return JSON.parse(new TextDecoder().decode(pt)); }
+  catch (e) { ENC.key = null; await encCache(); ENC.need = true; throw Object.assign(new Error('Data is locked'), { code: 'needs_pass' }); }
+}
 const GWDB = (() => {
   const subs = {}; const last = {}; let fileId = null, timer = null, busy = Promise.resolve();
   async function find() { if (fileId) return fileId; try { const s = new URL(DAPI); s.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and sharedWithMe = true"); s.searchParams.set('fields', 'files(id,owners(emailAddress))'); const js = await (await gwFetch(s)).json(); if (js.files && js.files[0]) return (fileId = js.files[0].id); } catch (e) { } const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id,modifiedTime)'); u.searchParams.set('orderBy', 'modifiedTime desc'); const j = await (await gwFetch(u)).json(); if (j.files && j.files[0]) return (fileId = j.files[0].id); const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: 'Audit Desk data.json', mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob(['{}'], { type: 'application/json' })); const c = await (await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd })).json(); return (fileId = c.id); }
-  async function readAll() { const id = await find(); const t = await (await gwFetch(`${DAPI}/${id}?alt=media`)).text(); try { return JSON.parse(t || '{}'); } catch (e) { return {}; } }
-  async function poll() { if (!gwOk()) return; try { const all = await readAll(); Object.keys(subs).forEach(path => { const k = path.split('/')[1], v = all[k], s = JSON.stringify(v || null); if (last[path] === s) return; last[path] = s; subs[path].forEach(f => f({ exists: !!v, data: () => v, fromCache: false, hasPendingWrites: false })); }); } catch (e) { if (e.code !== 'needs_reauth') logErr(e, 'drive data'); } }
+  async function readAll() { const id = await find(); const t = await (await gwFetch(`${DAPI}/${id}?alt=media`)).text(); return encUnwrap(t); }
+  async function poll() { if (!gwOk()) return; try { const all = await readAll(); Object.keys(subs).forEach(path => { const k = path.split('/')[1], v = all[k], s = JSON.stringify(v || null); if (last[path] === s) return; last[path] = s; subs[path].forEach(f => f({ exists: !!v, data: () => v, fromCache: false, hasPendingWrites: false })); }); } catch (e) { if (e.code === 'needs_pass') { if (K.reg && K.acc) { try { shell(); render(); } catch (x) { } } } else if (e.code !== 'needs_reauth') logErr(e, 'drive data'); } }
+  async function rewrite(plain) { const all = await readAll(); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all, plain) }); }
+  async function setAside() { const id = await find(); await gwFetch(`${DAPI}/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Audit Desk data (locked, old).json' }) }); fileId = null; }
   return {
+    poll, rewrite, setAside, refresh: async () => { await readAll(); await poll(); },
     doc: path => ({
-      set: body => (busy = busy.then(async () => { const all = await readAll(); all[path.split('/')[1]] = body; last[path] = JSON.stringify(body); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(all) }); })),
+      set: body => (busy = busy.then(async () => { const all = await readAll(); all[path.split('/')[1]] = body; last[path] = JSON.stringify(body); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all) }); })),
       onSnapshot: next => { (subs[path] = subs[path] || []).push(next); clearTimeout(timer); timer = setTimeout(() => { poll(); setInterval(poll, 45000); document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); }); }, 50); return () => { }; }
     })
   };
@@ -2294,6 +2317,7 @@ const GWDB = (() => {
 // the banner that asks for the one tap
 function gwBanner() {
   if (!IS_WEB) return '';
+  if (ENC.need && gwOk()) return `<div class="check w" style="justify-content:space-between;flex-wrap:wrap;gap:8px"><span>Your data in Drive is locked. Type your passphrase to open it on this device.</span><span class="row"><input class="in" id="encPass" type="password" placeholder="Passphrase" autocomplete="current-password"><button class="btn sm pri" data-act="encUnlock">Unlock</button><button class="btn sm" data-act="encForgot" data-help="If you lost the passphrase: the locked file is kept aside in Drive, and this device starts a fresh file from the data it has.">I forgot it</button></span></div>`;
   if (gwOk() && !GW.need) return '';
   return `<div class="check w" style="justify-content:space-between;flex-wrap:wrap">${GW.email ? `Tap to reconnect Google Drive (${esc(GW.email)}).` : 'Connect your Google Drive (aemporio6@gmail.com) so the tool reads the files by itself and keeps the same data on every device.'} <button class="btn sm pri" data-act="gwSignIn">${GW.email ? 'Reconnect Google' : 'Sign in with Google'}</button></div>`;
 }
@@ -3594,7 +3618,7 @@ async function bkDaily(force) {
   if (typeof IS_WEB === 'undefined' || !IS_WEB || !gwOk() || whoAmI()) return; const d = today(); if (!force && K.prefs.driveBackup === d) return;
   try {
     const f = await bkFolder(); const data = { app: 'Audit Desk', v: APPV, at: new Date().toISOString(), kv: Object.fromEntries(KEYS.map(k => [k, K[k]])), kvOnly: true };
-    const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: `Audit Desk backup ${d}.json`, parents: [f], mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob([JSON.stringify(data)], { type: 'application/json' }));
+    const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: `Audit Desk backup ${d}.json`, parents: [f], mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob([await encWrap(data)], { type: 'application/json' }));
     await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd });
     K.prefs.driveBackup = d; await save('prefs');
     const L = await bkList(); for (const x of L.slice(30)) { try { await gwFetch(`${DAPI}/${x.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"trashed":true}' }); } catch (e) { } } // keeps the last 30 days
@@ -3611,7 +3635,7 @@ Object.assign(ACT, {
   bkNow: async () => { if (!gwOk()) { toast('Sign in with Google first.'); return; } spin(2000); await bkDaily(true); await bkList().catch(() => { }); toast('Backed up to Drive → Audit Desk backups.'); render(); },
   bkLoad: async () => { if (!gwOk()) { toast('Sign in with Google first.'); return; } await bkList().catch(e => logErr(e, 'backups')); render(); },
   bkRestore: el => layer(`<h2>Restore ${esc(el.dataset.n)}?</h2><p>Accounts, splits, issues, locks, expenses and lists go back to that day. Today's version is backed up first, so this can be undone.</p><div class="row"><button class="btn pri" data-act="bkGo" data-id="${esc(el.dataset.id)}">Yes, restore</button><button class="btn" data-act="close">Cancel</button></div>`),
-  bkGo: async el => { try { await bkDaily(true); const d = JSON.parse(await (await gwFetch(`${DAPI}/${el.dataset.id}?alt=media`)).text()); if (d.app !== 'Audit Desk') throw new Error('Not an Audit Desk backup'); for (const k of KEYS) if (d.kv[k] !== undefined) K[k] = d.kv[k]; await save(...KEYS); invalidate(); closeLayer(); toast(`Restored the backup from ${String(d.at).slice(0, 10)}.`); log('Restored Drive backup ' + String(d.at).slice(0, 10)); go('home'); } catch (e) { logErr(e, 'restore'); toast('Could not restore: ' + e.message); } }
+  bkGo: async el => { try { await bkDaily(true); const d = await encUnwrap(await (await gwFetch(`${DAPI}/${el.dataset.id}?alt=media`)).text()); if (d.app !== 'Audit Desk') throw new Error('Not an Audit Desk backup'); for (const k of KEYS) if (d.kv[k] !== undefined) K[k] = d.kv[k]; await save(...KEYS); invalidate(); closeLayer(); toast(`Restored the backup from ${String(d.at).slice(0, 10)}.`); log('Restored Drive backup ' + String(d.at).slice(0, 10)); go('home'); } catch (e) { logErr(e, 'restore'); toast('Could not restore: ' + e.message); } }
 });
 
 // ====================== reminders on WhatsApp / e-mail ======================
@@ -3633,6 +3657,39 @@ const _vset3 = V.settings; V.settings = () => { const h = _vset3(); const i = h.
 const _nextList3 = nextList;
 nextList = function () { const L = _nextList3(); try { const R = undecidedReturns(); if (R.length) L.splice(1, 0, { t: `${R.length} refunded own-stock order${R.length > 1 ? 's' : ''}: did the item come back to the shelf?`, b: 'Answer', act: 'nxGo', v: 'refunds' }); } catch (e) { } return L; };
 Object.assign(HELPT, { retSet: 'Says whether the refunded item came back to the shelf.', scApply: 'Makes the counted quantity the stock.', mbAdd: 'Adds the person and shares the data with their Gmail.', mbShare: 'Shares the data file again.', mbDel: 'Removes the person from the list.', bkNow: 'Saves a backup in Drive now.', bkLoad: 'Lists the backups in Drive.', bkRestore: 'Goes back to that day.', bkGo: 'Yes, restore.' });
+
+// v2.2 — optional encryption of the data kept in Drive
+function encCard() {
+  if (!IS_WEB || whoAmI()) return '';
+  const on = ENC.on || !!ENC.key;
+  return `<div class="card"><h2>Lock my data ${help('Encrypts the data file and the daily backups in your Drive with a passphrase, on this device, before they are sent. Without the passphrase nobody can read them, not even Google or Claude.')}</h2>
+  ${on ? `<p class="note">✓ The data in Drive is locked. This device remembers the passphrase. Other devices ask for it once.</p><div class="row"><button class="btn" data-act="encOff" data-help="Saves the data in Drive as plain again.">Turn the lock off</button></div>`
+  : `<p class="note">Optional. Choose a passphrase of 8 or more letters. <b>Write it down:</b> if you lose it, the locked file cannot be opened (you can still start a fresh file, and this device keeps its own copy of the data).</p>
+  <div class="form"><label>Passphrase<input class="in" id="encP1" type="password" autocomplete="new-password"></label><label>Again<input class="in" id="encP2" type="password" autocomplete="new-password"></label></div>
+  <div class="row"><button class="btn pri" data-act="encOn">Lock my data</button></div>`}</div>`;
+}
+const _vset4 = V.settings; V.settings = () => _vset4() + encCard();
+Object.assign(ACT, {
+  encOn: async () => {
+    const a = ($('#encP1') || {}).value || '', b = ($('#encP2') || {}).value || '';
+    if (a.length < 8) { toast('Use 8 or more letters.'); return; } if (a !== b) { toast('The two passphrases are different.'); return; }
+    if (!gwOk()) { toast('Sign in with Google first.'); return; }
+    try { spin(3000); const salt = crypto.getRandomValues(new Uint8Array(16)); ENC.saltB64 = u8b64(salt); ENC.key = await encDerive(a, salt); await encCache(); await GWDB.rewrite(false); ENC.on = true; ENC.need = false; K.prefs.driveBackup = ''; await save('prefs'); log('Data lock turned on'); toast('Your data in Drive is locked now.'); render(); }
+    catch (e) { ENC.key = null; await encCache(); logErr(e, 'lock'); toast('Could not lock: ' + e.message); }
+  },
+  encOff: async () => {
+    try { await GWDB.rewrite(true); ENC.key = null; ENC.on = false; await encCache(); log('Data lock turned off'); toast('The lock is off.'); render(); } catch (e) { logErr(e, 'unlock'); toast('Could not turn off: ' + e.message); }
+  },
+  encUnlock: async () => {
+    const v = ($('#encPass') || {}).value || ''; if (!v) { toast('Type the passphrase.'); return; }
+    try { ENC.key = await encDerive(v, b64u8(ENC.saltB64)); await GWDB.refresh(); if (ENC.need) throw new Error('wrong'); await encCache(); toast('Opened.'); shell(); render(); }
+    catch (e) { ENC.key = null; ENC.need = true; toast('That passphrase does not open it. Try again.'); }
+  },
+  encForgot: async () => {
+    if (!confirm('The locked file will be kept aside in Drive and a fresh file will be started from the data on this device. Continue?')) return;
+    try { await GWDB.setAside(); ENC.need = false; ENC.on = false; ENC.key = null; await encCache(); await save(...KEYS); log('Locked file set aside; fresh file started'); toast('Done. A fresh file is started.'); shell(); render(); } catch (e) { logErr(e, 'forgot'); toast('Could not do it: ' + e.message); }
+  }
+});
 
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
