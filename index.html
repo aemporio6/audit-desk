@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Audit Desk</title><meta name="theme-color" content="#1d4f91">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com https://*.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.google.com data: blob:; img-src 'self' data: blob: https://*.googleusercontent.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://*.google.com https://*.gstatic.com; worker-src 'self' blob:; frame-src https://*.google.com; font-src 'self' data: https://*.gstatic.com; object-src 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com https://*.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.google.com https://*.workers.dev data: blob:; img-src 'self' data: blob: https://*.googleusercontent.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://*.google.com https://*.gstatic.com; worker-src 'self' blob:; frame-src https://*.google.com; font-src 'self' data: https://*.gstatic.com; object-src 'none'; base-uri 'none'">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231d4f91'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>:root{--bg:#f3f5f8;--panel:#fff;--ink:#14202e;--muted:#5b6877;--line:#dfe4ea;--soft:#eef2f6;--accent:#1d4f91;--accent-soft:#e3ecf8;--ok:#1c7a44;--ok-soft:#e2f3e9;--warn:#a85d00;--warn-soft:#fbefd9;--bad:#b4271f;--bad-soft:#fbe5e2;--grey-soft:#eceff3;--f:system-ui,-apple-system,"Segoe UI",sans-serif;--fn:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f151c;--panel:#17202a;--ink:#e6ecf2;--muted:#97a3b1;--line:#2a3542;--soft:#1d2733;--accent:#7fb0f0;--accent-soft:#1c2d44;--ok:#5cc98a;--ok-soft:#14301f;--warn:#f0b35a;--warn-soft:#3a2a12;--bad:#f08177;--bad-soft:#3d1a17;--grey-soft:#222c37;color-scheme:dark}}
@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.9.0';
+const APPV = '3.0.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -2324,8 +2324,11 @@ async function gwAfterLogin() {
   toast(`Connected to Google Drive${GW.email ? ' (' + GW.email + ')' : ''}.`); render(); driveSync(false);
 }
 async function gwFetch(url, opt = {}) {
+  if (!gwOk() && typeof gwSilent === 'function') await gwSilent(); // stays connected without a tap, when the optional token helper is set up
   if (!gwOk()) { GW.need = true; shell(); throw Object.assign(new Error('Google sign-in needed'), { code: 'needs_reauth' }); }
-  const r = await fetch(url, Object.assign({}, opt, { headers: Object.assign({ Authorization: 'Bearer ' + GW.token }, opt.headers || {}) }));
+  const go = () => fetch(url, Object.assign({}, opt, { headers: Object.assign({ Authorization: 'Bearer ' + GW.token }, opt.headers || {}) }));
+  let r = await go();
+  if (r.status === 401 && typeof gwSilent === 'function') { GW.token = null; try { localStorage.removeItem('ad-gtok'); } catch (e) { } if (await gwSilent()) r = await go(); }
   if (r.status === 401) { GW.token = null; try { localStorage.removeItem('ad-gtok'); } catch (e) { } GW.need = true; shell(); throw Object.assign(new Error('Google sign-in expired'), { code: 'needs_reauth' }); }
   if (!r.ok) { const t = await r.text().catch(() => ''); throw Object.assign(new Error(`Google Drive ${r.status}: ${t.slice(0, 200)}`), { code: r.status >= 500 ? 'server_unavailable' : 'tool_error' }); }
   return r;
@@ -4201,6 +4204,63 @@ Object.assign(ACT, {
   sumCopy: () => { const t = ($('#sumTxt') || {}).textContent || ''; try { navigator.clipboard.writeText(t); } catch (e) { const x = document.createElement('textarea'); x.value = t; document.body.appendChild(x); x.select(); document.execCommand('copy'); x.remove(); } toast('Copied.'); }
 });
 document.addEventListener('change', ev => { const t = ev.target; if (t && (t.dataset || {}).act && ['sumMonth', 'mapRename'].includes(t.dataset.act) && ACT[t.dataset.act]) ACT[t.dataset.act](t); });
+
+// v3.0 — optional "stay connected": a tiny helper (Cloudflare Worker you own) renews the Google pass by itself,
+// so the "Tap to reconnect" bar does not come back. The Google client secret lives ONLY in that helper, never in this page.
+const WK = { get url() { try { return localStorage.getItem('ad-worker') || ''; } catch (e) { return ''; } }, get rt() { try { return localStorage.getItem('ad-rt') || ''; } catch (e) { return ''; } } };
+let SILENT = null;
+async function wkPost(path, body) {
+  const r = await fetch(WK.url + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let j = {}; try { j = await r.json(); } catch (e) { } return { ok: r.ok, status: r.status, j };
+}
+function gwSilent() {
+  if (SILENT) return SILENT;
+  SILENT = (async () => {
+    if (typeof IS_WEB === 'undefined' || !IS_WEB || !WK.url || !WK.rt) return false;
+    try {
+      const x = await wkPost('/refresh', { refresh_token: WK.rt });
+      if (!x.ok) { if (x.status === 400) { try { localStorage.removeItem('ad-rt'); } catch (e) { } } return false; }
+      if (!x.j.access_token) return false;
+      GW.token = x.j.access_token; GW.exp = Date.now() + ((+x.j.expires_in || 3600) - 120) * 1000; GW.need = false;
+      try { localStorage.setItem('ad-gtok', JSON.stringify({ t: GW.token, exp: GW.exp })); } catch (e) { }
+      return true;
+    } catch (e) { return false; }
+  })().finally(() => { SILENT = null; });
+  return SILENT;
+}
+// when the page opens with an expired pass: renew it first, then start everything as after a normal sign-in
+setTimeout(async () => { if (typeof IS_WEB !== 'undefined' && IS_WEB && !gwOk() && WK.url && WK.rt && GW.email) { if (await gwSilent()) { try { await gwAfterLogin(); } catch (e) { } } } }, 400);
+
+async function stayOn() {
+  let u = (($('#wkUrl') || {}).value || '').trim().replace(/\/+$/, '');
+  if (!/^https:\/\/[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(u)) { toast('Paste the helper address exactly as Cloudflare shows it. It starts with https://'); return; }
+  if (!/\.workers\.dev$/.test(u)) { toast('The helper address must end with .workers.dev'); return; }
+  try { localStorage.setItem('ad-worker', u); } catch (e) { }
+  if (!(await gwLoadLib()) || !google.accounts.oauth2.initCodeClient) { toast('Google sign-in could not load. Check the internet connection.'); return; }
+  const c = google.accounts.oauth2.initCodeClient({
+    client_id: GCLIENT, scope: 'https://www.googleapis.com/auth/drive openid email', ux_mode: 'popup', login_hint: GW.email || undefined,
+    callback: async r => {
+      if (!r || !r.code) { toast('Google did not give permission. Try again.'); return; }
+      const x = await wkPost('/exchange', { code: r.code }).catch(() => null);
+      if (!x || !x.ok) { toast('The helper said no (' + ((x && x.j && x.j.error) || 'not reachable') + '). Check its address and settings.'); return; }
+      if (!x.j.refresh_token) { toast('Google did not give a long-lasting key this time. Open myaccount.google.com/permissions, remove Audit Desk, then press this button again.'); return; }
+      try { localStorage.setItem('ad-rt', x.j.refresh_token); } catch (e) { }
+      GW.token = x.j.access_token; GW.exp = Date.now() + ((+x.j.expires_in || 3600) - 120) * 1000; try { localStorage.setItem('ad-gtok', JSON.stringify({ t: GW.token, exp: GW.exp })); } catch (e) { } GW.need = false;
+      toast('Done. Google Drive now stays connected on this device.'); await gwAfterLogin(); render();
+    },
+    error_callback: () => toast('Google window was closed.')
+  });
+  c.requestCode();
+}
+function stayCard() {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB) return '';
+  const on = WK.url && WK.rt;
+  return `<div class="card"><h2>Stay connected (optional) ${help('Without this, Google asks you to tap "Reconnect" now and then. With a small free helper that you own, this device renews the connection by itself. Needs a free Cloudflare account. The steps are in the guide.')}</h2>
+  ${on ? `<p>On. This device renews Google Drive by itself. <span class="note">Helper: ${esc(WK.url)}</span></p><button class="btn sm" data-act="stayOff">Turn off on this device</button>`
+    : `<p class="note">Not set up. Paste the address of your helper, then press the button.</p><div class="addrow"><input class="in" id="wkUrl" placeholder="https://audit-desk-token.your-name.workers.dev" value="${esc(WK.url)}"><button class="btn pri" data-act="stayOn">Connect for good</button></div><p class="note">Steps: docs/CLOUDFLARE_SETUP.md</p>`}</div>`;
+}
+const _vset11 = V.settings; V.settings = () => _vset11() + stayCard();
+Object.assign(ACT, { stayOn: () => stayOn(), stayOff: () => { try { localStorage.removeItem('ad-rt'); } catch (e) { } toast('Turned off on this device.'); render(); } });
 
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
