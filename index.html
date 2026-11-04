@@ -341,6 +341,10 @@ function decodeText(buf) {
   const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   try { return new TextDecoder('utf-8', { fatal: true }).decode(u8); } catch (e) { return new TextDecoder('windows-1252').decode(u8); }
 }
+// currency-aware minor units (GBP/USD/EUR/PKR have 2 decimals, JPY 0, KWD/BHD 3)
+AD.MINOR = { GBP: 2, USD: 2, EUR: 2, AUD: 2, CAD: 2, PKR: 2, INR: 2, AED: 2, CNY: 2, JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3 };
+AD.minorDigits = c => (AD.MINOR[String(c || 'GBP').toUpperCase()] ?? 2);
+AD.toMinor = (v, c) => { const d = AD.minorDigits(c), n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? Math.round(+(n * Math.pow(10, d)).toFixed(6)) : null; };
 AD.sha256 = async function (data) { // real file identity (Web Crypto); FNV below stays only as the fast legacy id
   const u8 = typeof data === 'string' ? new TextEncoder().encode(data) : (data instanceof Uint8Array ? data : new Uint8Array(data));
   const subtle = (typeof crypto !== 'undefined' && crypto.subtle) || require('crypto').webcrypto.subtle;
@@ -491,7 +495,7 @@ R.push({
       const o = cleanOrder(row[oc]);
       if (!o) { if (row.filter(x => String(x).trim()).length >= 3) aside.push({ row: r + 1, reason: 'No eBay order number in this row', values: row.slice(0, 8).map(v => String(v).slice(0, 40)) }); continue; }
       const ae = ix.ae > -1 ? String(row[ix.ae] == null ? '' : (typeof row[ix.ae] === 'number' ? Math.round(row[ix.ae]).toString() : row[ix.ae])).replace(/[^\d]/g, '') : '';
-      out.push({ order: o, cost: ix.cost > -1 ? P(row[ix.cost]) : 0, costRaw: ix.cost > -1 ? num(row[ix.cost]) : null, ae: ae.length >= 8 ? ae : '', qty: ix.qty > -1 ? num(row[ix.qty]) : null, status: ix.status > -1 ? String(row[ix.status] || '').trim() : '', earn: ix.earn > -1 ? num(row[ix.earn]) : null, trk: ix.trk > -1 ? String(row[ix.trk] || '').trim() : '', sku: ix.sku > -1 ? String(row[ix.sku] || '').trim() : '', pay: ix.pay > -1 ? String(row[ix.pay] || '').trim() : '', tab: sh.name, row: r + 1 });
+      out.push({ row: r + 1, order: o, cost: ix.cost > -1 ? P(row[ix.cost]) : 0, costRaw: ix.cost > -1 ? num(row[ix.cost]) : null, ae: ae.length >= 8 ? ae : '', qty: ix.qty > -1 ? num(row[ix.qty]) : null, status: ix.status > -1 ? String(row[ix.status] || '').trim() : '', earn: ix.earn > -1 ? num(row[ix.earn]) : null, trk: ix.trk > -1 ? String(row[ix.trk] || '').trim() : '', sku: ix.sku > -1 ? String(row[ix.sku] || '').trim() : '', pay: ix.pay > -1 ? String(row[ix.pay] || '').trim() : '', tab: sh.name, row: r + 1 });
     }
     const used = Object.values(ix).filter(i => i > -1);
     const extra = {}; { const un = H.map((h, i) => ({ h: String(h).trim(), i })).filter(x => x.h && !used.includes(x.i)).slice(0, 25); for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const o = cleanOrder(row[ix.order]); if (!o) continue; un.forEach(x => { const v = row[x.i]; if (v === '' || v == null) return; const e = extra[x.h] = extra[x.h] || {}; if (e[o] === undefined) e[o] = v instanceof Date ? v.toISOString().slice(0, 10) : v; }); } }
@@ -645,7 +649,7 @@ R.push({
     const out = [];
     for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const id = String(row[oi] || '').trim(); const type = ti > -1 ? String(row[ti] || '').trim() : ''; if (!id && !/transfer|payout|deposit|withdraw|service fee|subscription|adjust|fee/i.test(type) && !(totC > -1 && P(row[totC]))) continue;
       const s = sales.reduce((a, i) => a + P(row[i]), 0) + post.reduce((a, i) => a + P(row[i]), 0), f = feeList.reduce((a, i) => a + (flip[i] < 0 ? -Math.abs(P(row[i])) : P(row[i])), 0), tot = totC > -1 ? P(row[totC]) : null, rf = rfC > -1 ? -Math.abs(P(row[rfC])) : 0;
-      out.push({ order: id, type, refund: rf, sales: s, fees: f, tax: taxC.reduce((a, i) => a + P(row[i]), 0), total: tot, amount: P(row[ai]), fee: fi > -1 ? P(row[fi]) : f, date: parseDate(row[di]), sku: ki > -1 ? String(row[ki]) : '', qty: qi > -1 ? num(row[qi]) : null }); }
+      out.push({ row: r + 1, order: id, type, refund: rf, sales: s, fees: f, tax: taxC.reduce((a, i) => a + P(row[i]), 0), total: tot, amount: P(row[ai]), fee: fi > -1 ? P(row[fi]) : f, date: parseDate(row[di]), sku: ki > -1 ? String(row[ki]) : '', qty: qi > -1 ? num(row[qi]) : null }); }
     return { platform, rows: out, count: out.length, month: majorityMonth(out.map(x => x.date)), aside: [], unusedCols: [] };
   }
 });
@@ -946,11 +950,14 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.3.0';
+const APPV = '2.4.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
-const fmt = (p, c = 'GBP') => { if (p === null || p === undefined || p === '') return '–'; const n = p / 100; const s = (CUR[c] || '£') + Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return n < -0.0049 ? `(${s})` : s; };
+const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
+// "Not VAT registered" contains the words "VAT registered": only a status that STARTS with them counts
+const isVatReg = s => /^\s*VAT registered/i.test(String(s || ''));
+const CURNOW = { c: 'GBP' }; // currency of the account on screen
+const fmt = (p, c = CURNOW.c) => { if (p === null || p === undefined || p === '') return '–'; const d = AD.minorDigits(c); const n = p / Math.pow(10, d); const s = (CUR[c] || '£') + Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: d, maximumFractionDigits: d }); return n < -0.0049 * Math.pow(10, 2 - d) ? `(${s})` : s; };
 const money = (p, c) => `<span class="num ${p < 0 ? 'neg' : ''}">${fmt(p, c)}</span>`;
 const ML = m => m ? new Date(m + '-15').toLocaleString('en-GB', { month: 'short', year: 'numeric' }) : '–';
 const MLL = m => m ? new Date(m + '-15').toLocaleString('en-GB', { month: 'long', year: 'numeric' }) : '–';
@@ -1710,7 +1717,7 @@ T.shot = (a, m, A) => {
   ${s && s.auto ? '<p class="note">The tool read these numbers from the screenshot by itself. Have a quick look; tap “Edit numbers” to fix any.</p>' : ''}${s ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th>Line</th><th class="r">Screenshot</th><th class="r">Tool</th><th class="r">Difference</th></tr></thead><tbody>${shotCompare(A, s).map(r => `<tr><td>${esc(r.k)}</td><td class="r num">${r.isQty ? r.theirs / 100 : fmt(r.theirs)}</td><td class="r num">${r.ours === null ? '–' : r.isQty ? r.ours / 100 : fmt(r.ours)}</td><td class="r">${r.d === null ? '–' : r.bad ? pill(r.isQty ? String(r.d / 100) : fmt(r.d), 'warn') : pill('match', 'ok')}</td></tr>`).join('')}</tbody></table></div><p class="note">Seller Hub sometimes shows fee credits a few pence different from the report. The report is the proof; the screenshot is an extra check.</p>` : '<p class="note">Optional. Type the numbers from the screenshot to compare.</p>'}</div>`;
 };
 T.vat = (a, m, A) => {
-  const reg = /VAT registered/.test(a.vat || '');
+  const reg = isVatReg(a.vat);
   const fees = (A.sums.fvf || 0) + (A.sums.reg || 0) + (A.sums.intl || 0) + (A.sums.inad || 0) + (A.sums.below || 0) + (A.sums.insertion || 0) + (A.sums.ads || 0) + (A.sums.subscription || 0) - (A.sums.feeCredits || 0) - (A.sums.adsCredit || 0);
   const uk = A.sites['UK (£)'] || { gross: 0 };
   return `<div class="card"><h2>VAT (estimate)</h2><p class="note">Account VAT status: <b>${esc(a.vat || 'not set')}</b>. Change it in Lists → Accounts.</p><div class="calc"><span class="l">VAT inside eBay fees (fees include 20% VAT)</span>${money(Math.round(fees / 6))}${reg ? `<span class="l">VAT on UK sales (20% standard rate, estimate)</span>${money(Math.round(uk.gross / 6))}<span class="l tt">Estimated VAT to pay</span><span class="tt">${money(Math.round(uk.gross / 6) - Math.round(fees / 6))}</span>` : ''}</div><p class="note">${reg ? 'An estimate to plan cash. The VAT return itself stays with the accountant.' : 'Not VAT registered: VAT in fees is a cost and cannot be claimed back.'}</p></div>`;
@@ -2293,7 +2300,7 @@ const ENC = { key: null, need: false, on: false, saltB64: '' };
 const u8b64 = u => { let s = ''; for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192)); return btoa(s); };
 const b64u8 = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
 async function encDerive(pass, salt) { const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']); return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' }, km, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']); }
-async function encCache() { try { if (ENC.key) localStorage.setItem('ad-ek', JSON.stringify({ salt: ENC.saltB64, raw: u8b64(new Uint8Array(await crypto.subtle.exportKey('raw', ENC.key))) })); else localStorage.removeItem('ad-ek'); } catch (e) { } }
+async function encCache() { try { if (ENC.key && localStorage.getItem('ad-ek-off') !== '1') localStorage.setItem('ad-ek', JSON.stringify({ salt: ENC.saltB64, raw: u8b64(new Uint8Array(await crypto.subtle.exportKey('raw', ENC.key))) })); else localStorage.removeItem('ad-ek'); } catch (e) { } }
 async function encWrap(obj, forcePlain) {
   if (!ENC.key || forcePlain) return JSON.stringify(obj);
   const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, ENC.key, new TextEncoder().encode(JSON.stringify(obj))));
@@ -2316,7 +2323,7 @@ const GWDB = (() => {
   async function rewrite(plain) { const all = await readAll(); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all, plain) }); }
   async function setAside() { const id = await find(); await gwFetch(`${DAPI}/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Audit Desk data (locked, old).json' }) }); fileId = null; }
   return {
-    poll, rewrite, setAside, refresh: async () => { await readAll(); await poll(); },
+    poll, rewrite, setAside, readOnly: readAll, writeAll: async all => { const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all) }); }, refresh: async () => { await readAll(); await poll(); },
     doc: path => ({
       set: body => (busy = busy.then(async () => { const all = await readAll(); all[path.split('/')[1]] = body; last[path] = JSON.stringify(body); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all) }); })),
       onSnapshot: next => { (subs[path] = subs[path] || []).push(next); clearTimeout(timer); timer = setTimeout(() => { poll(); setInterval(poll, 45000); document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); }); }, 50); return () => { }; }
@@ -3548,7 +3555,7 @@ Object.assign(ACT, {
 // ====================== VAT ======================
 function vatFor(a, A) {
   if (!a || !A || !A.sums) return null; const st = a.vat || '';
-  if (!/VAT registered/i.test(st)) return { reg: false, due: 0 };
+  if (!isVatReg(st)) return { reg: false, due: 0 };
   const uk = A.kind === 'ebay' ? ((A.sites || {})['UK (£)'] || { gross: 0 }).gross : A.sums.gross;
   const back = A.kind === 'ebay' ? (A.orders || []).reduce((s, o) => s + (o.back || 0), 0) : (A.sums.refunds || 0);
   const turnover = Math.max(0, uk - (A.kind === 'ebay' ? Math.round(back * (uk / Math.max(1, A.sums.gross || 1))) : back));
@@ -3604,7 +3611,7 @@ async function shareWith(email, role, withFolders) {
 }
 function membersCard() {
   const L = K.prefs.members || []; if (whoAmI()) return `<div class="card"><h2>You are signed in as ${esc(ME.name || ME.email)} (${esc(ME.role)})</h2><p class="note">You see ${ME.accounts && ME.accounts.length ? 'only your accounts: ' + esc(ME.accounts.map(id => (acctById(id) || {}).name).filter(Boolean).join(', ')) : 'every account'}. The owner can change this.</p></div>`;
-  return `<div class="card"><h2>Team members ${help('A VA or partner signs in with their own Google account and sees only the accounts you pick. The tool shares the data file (and, if ticked, the Drive folders) with their Gmail. This limits what the screens show; anyone with the shared file can still open it in Drive, so share only with people you trust.')}</h2>
+  return `<div class="card"><h2>Team members ${help('A VA or partner signs in with their own Google account and sees only the accounts you pick. The tool shares the data file (and, if ticked, the Drive folders) with their Gmail. This limits what the screens show; anyone with the shared file can still open it in Drive, so share only with people you trust.')}</h2><p class="note"><b>Important:</b> a team member can technically read every account in the shared data file, even if the screen shows only theirs. Add only people you fully trust.</p>
   <div class="list">${L.map((x, i) => `<div class="li" style="flex-wrap:wrap"><div class="grow" style="min-width:200px"><div class="t">${esc(x.name || x.email)} · ${esc(x.role)}</div><div class="d">${esc(x.email)} · ${x.accounts && x.accounts.length ? esc(x.accounts.map(id => (acctById(id) || {}).name).filter(Boolean).join(', ')) : 'all accounts'}${x.shared ? ' · shared ' + esc(String(x.shared).slice(0, 10)) : ''}</div></div><button class="btn sm" data-act="mbShare" data-i="${i}">Share again</button><button class="btn sm" data-act="mbDel" data-i="${i}">Remove</button></div>`).join('') || '<p class="note">No team members yet.</p>'}</div>
   <div class="form" style="margin-top:8px"><label>Their Gmail<input class="in" id="mbEmail" type="email" placeholder="name@gmail.com"></label><label>Person${dd('mbName', 'Person', '', [{ v: '', l: '— none —' }].concat(K.reg.Person))}</label><label>Role${dd('mbRole', null, 'VA', [{ v: 'VA', l: 'VA' }, { v: 'Partner', l: 'Partner' }])}</label></div>
   <div class="chips" style="margin:6px 0">${K.acc.map(a => `<label class="chip"><input type="checkbox" class="mbAcc" value="${esc(a.id)}" hidden>${esc(a.name)}</label>`).join('')}</div><p class="note">Tick their accounts (none ticked = all).</p>
@@ -3629,7 +3636,7 @@ async function bkFolder() {
 async function bkDaily(force) {
   if (typeof IS_WEB === 'undefined' || !IS_WEB || !gwOk() || whoAmI()) return; const d = today(); if (!force && K.prefs.driveBackup === d) return;
   try {
-    const f = await bkFolder(); const data = { app: 'Audit Desk', v: APPV, at: new Date().toISOString(), kv: Object.fromEntries(KEYS.map(k => [k, K[k]])), kvOnly: true };
+    const f = await bkFolder(); const data = { app: 'Audit Desk', v: APPV, at: new Date().toISOString(), kv: Object.fromEntries(KEYS.map(k => [k, K[k]])), kvOnly: true }; data.sum = await AD.sha256(JSON.stringify(data.kv));
     const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: `Audit Desk backup ${d}.json`, parents: [f], mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob([await encWrap(data)], { type: 'application/json' }));
     await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd });
     K.prefs.driveBackup = d; await save('prefs');
@@ -3647,7 +3654,7 @@ Object.assign(ACT, {
   bkNow: async () => { if (!gwOk()) { toast('Sign in with Google first.'); return; } spin(2000); await bkDaily(true); await bkList().catch(() => { }); toast('Backed up to Drive → Audit Desk backups.'); render(); },
   bkLoad: async () => { if (!gwOk()) { toast('Sign in with Google first.'); return; } await bkList().catch(e => logErr(e, 'backups')); render(); },
   bkRestore: el => layer(`<h2>Restore ${esc(el.dataset.n)}?</h2><p>Accounts, splits, issues, locks, expenses and lists go back to that day. Today's version is backed up first, so this can be undone.</p><div class="row"><button class="btn pri" data-act="bkGo" data-id="${esc(el.dataset.id)}">Yes, restore</button><button class="btn" data-act="close">Cancel</button></div>`),
-  bkGo: async el => { try { await bkDaily(true); const d = await encUnwrap(await (await gwFetch(`${DAPI}/${el.dataset.id}?alt=media`)).text()); if (d.app !== 'Audit Desk') throw new Error('Not an Audit Desk backup'); for (const k of KEYS) if (d.kv[k] !== undefined) K[k] = d.kv[k]; await save(...KEYS); invalidate(); closeLayer(); toast(`Restored the backup from ${String(d.at).slice(0, 10)}.`); log('Restored Drive backup ' + String(d.at).slice(0, 10)); go('home'); } catch (e) { logErr(e, 'restore'); toast('Could not restore: ' + e.message); } }
+  bkGo: async el => { try { await bkDaily(true); const d = await encUnwrap(await (await gwFetch(`${DAPI}/${el.dataset.id}?alt=media`)).text()); if (d.app !== 'Audit Desk') throw new Error('Not an Audit Desk backup'); if (d.sum && d.sum !== await AD.sha256(JSON.stringify(d.kv))) throw new Error('This backup file is damaged (its check number does not match). Nothing was changed.'); for (const k of KEYS) if (d.kv[k] !== undefined) K[k] = d.kv[k]; await save(...KEYS); invalidate(); closeLayer(); toast(`Restored the backup from ${String(d.at).slice(0, 10)}.`); log('Restored Drive backup ' + String(d.at).slice(0, 10)); go('home'); } catch (e) { logErr(e, 'restore'); toast('Could not restore: ' + e.message); } }
 });
 
 // ====================== reminders on WhatsApp / e-mail ======================
@@ -3675,13 +3682,27 @@ function encCard() {
   if (!IS_WEB || whoAmI()) return '';
   const on = ENC.on || !!ENC.key;
   return `<div class="card"><h2>Lock my data ${help('Encrypts the data file and the daily backups in your Drive with a passphrase, on this device, before they are sent. Without the passphrase nobody can read them, not even Google or Claude.')}</h2>
-  ${on ? `<p class="note">✓ The data in Drive is locked. This device remembers the passphrase. Other devices ask for it once.</p><div class="row"><button class="btn" data-act="encOff" data-help="Saves the data in Drive as plain again.">Turn the lock off</button></div>`
+  ${on ? `<p class="note">✓ The data in Drive is locked. This device remembers the passphrase. Other devices ask for it once.</p><div class="form"><label>Old passphrase<input class="in" id="encOld" type="password" autocomplete="current-password"></label><label>New passphrase<input class="in" id="encN1" type="password" autocomplete="new-password"></label><label>New again<input class="in" id="encN2" type="password" autocomplete="new-password"></label></div>
+  <div class="row"><button class="btn" data-act="encChange" data-help="Locks the data again with a new passphrase. The old one stops working.">Change passphrase</button><button class="btn" data-act="encRemember" data-help="On a shared or public computer, do not keep the unlock on this device. It will ask for the passphrase each time.">${(function () { try { return localStorage.getItem('ad-ek-off') === '1'; } catch (e) { return false; } })() ? 'Remember the passphrase on this device' : 'Do not remember it on this device'}</button><button class="btn" data-act="encOff" data-help="Saves the data in Drive as plain again.">Turn the lock off</button></div>`
   : `<p class="note">Optional. Choose a passphrase of 8 or more letters. <b>Write it down:</b> if you lose it, the locked file cannot be opened (you can still start a fresh file, and this device keeps its own copy of the data).</p>
   <div class="form"><label>Passphrase<input class="in" id="encP1" type="password" autocomplete="new-password"></label><label>Again<input class="in" id="encP2" type="password" autocomplete="new-password"></label></div>
   <div class="row"><button class="btn pri" data-act="encOn">Lock my data</button></div>`}</div>`;
 }
 const _vset4 = V.settings; V.settings = () => _vset4() + encCard();
 Object.assign(ACT, {
+  encChange: async () => {
+    const o = ($('#encOld') || {}).value || '', n1 = ($('#encN1') || {}).value || '', n2 = ($('#encN2') || {}).value || '';
+    if (n1.length < 8) { toast('Use 8 or more letters.'); return; } if (n1 !== n2) { toast('The two new passphrases are different.'); return; }
+    try {
+      const chk = await encDerive(o, b64u8(ENC.saltB64)); const a = u8b64(new Uint8Array(await crypto.subtle.exportKey('raw', chk))), b = u8b64(new Uint8Array(await crypto.subtle.exportKey('raw', ENC.key)));
+      if (a !== b) { toast('The old passphrase is not right.'); return; }
+      spin(3000); const all = await GWDB.readOnly(); const salt = crypto.getRandomValues(new Uint8Array(16)); const prev = { k: ENC.key, s: ENC.saltB64 };
+      ENC.saltB64 = u8b64(salt); ENC.key = await encDerive(n1, salt);
+      try { await GWDB.writeAll(all); } catch (e) { ENC.key = prev.k; ENC.saltB64 = prev.s; throw e; }
+      await encCache(); log('Data lock passphrase changed'); toast('Passphrase changed. Other devices will ask for the new one.'); render();
+    } catch (e) { logErr(e, 'change passphrase'); toast('Could not change it: ' + e.message); }
+  },
+  encRemember: async () => { try { if (localStorage.getItem('ad-ek-off') === '1') { localStorage.removeItem('ad-ek-off'); await encCache(); toast('This device remembers the passphrase.'); } else { localStorage.setItem('ad-ek-off', '1'); localStorage.removeItem('ad-ek'); toast('This device will ask each time.'); } } catch (e) { } render(); },
   encOn: async () => {
     const a = ($('#encP1') || {}).value || '', b = ($('#encP2') || {}).value || '';
     if (a.length < 8) { toast('Use 8 or more letters.'); return; } if (a !== b) { toast('The two passphrases are different.'); return; }
@@ -3700,6 +3721,106 @@ Object.assign(ACT, {
   encForgot: async () => {
     if (!confirm('The locked file will be kept aside in Drive and a fresh file will be started from the data on this device. Continue?')) return;
     try { await GWDB.setAside(); ENC.need = false; ENC.on = false; ENC.key = null; await encCache(); await save(...KEYS); log('Locked file set aside; fresh file started'); toast('Done. A fresh file is started.'); shell(); render(); } catch (e) { logErr(e, 'forgot'); toast('Could not do it: ' + e.message); }
+  }
+});
+
+// v2.4 — audit status ladder, account currency on screen
+const SITE_CUR = { '£': 'GBP', '$': 'USD', '€': 'EUR', 'A$': 'AUD', 'C$': 'CAD' };
+function curOfAcct(a) {
+  if (!a) return 'GBP'; if (a.Currency && AD.MINOR[String(a.Currency).toUpperCase()] !== undefined) return String(a.Currency).toUpperCase();
+  const s = (a.Site || []); if (s.length === 1) { const m = String(s[0]).match(/\((.+)\)/); if (m && SITE_CUR[m[1]]) return SITE_CUR[m[1]]; } return 'GBP';
+}
+const _render5 = render; render = function () { try { CURNOW.c = S.view === 'audit' ? curOfAcct(acctById(S.acct)) : 'GBP'; } catch (e) { CURNOW.c = 'GBP'; } return _render5.apply(this, arguments); };
+
+// "Calculation ran" is not "audit passed": seven separate steps
+function auditStatus(a, m, A) {
+  if (!A || A.error || !A.sums) return null;
+  const eb = A.kind === 'ebay', key = a.id + '|' + m, lock = K.locks[key], rev = (K.prefs.reviewed || {})[key];
+  let open = [], issuesN = 0; try { open = issuesAll().filter(i => i.acctId === a.id && i.month === m && isOpen(i)); issuesN = open.length; } catch (e) { }
+  const bad = open.filter(i => i.sev === 'bad').length;
+  const S = [];
+  const imp = eb ? !!(A.orMatch && A.lines) : (A.sums.orders > 0 || A.sums.otherN > 0);
+  S.push({ k: 'import', t: 'Files imported', ok: imp, why: imp ? 'The files for this month are in.' : eb ? 'The Transaction report and the Orders report are not both in yet.' : 'No settlement lines found yet.' });
+  const valid = eb ? A.netFail === 0 : true;
+  S.push({ k: 'valid', t: 'Data checked', ok: imp && valid, why: !imp ? 'Waiting for the files.' : valid ? 'Every line adds up.' : `${A.netFail} lines do not add up.` });
+  const costOk = (A.nCostMissing || 0) === 0, cashOk = eb ? Math.abs(A.cash.diff) <= 1 : true, payOk = eb ? !!(A.payMatch && A.payMatch.found === A.payMatch.total) : false;
+  const recWhy = !cashOk ? `Cash is out by ${fmt(A.cash.diff)}.` : !costOk ? `${A.nCostMissing} orders have no cost.` : !payOk ? (eb ? 'Payouts are not all found on the bank / Wise statement.' : 'Payouts for this platform are not matched to a bank statement yet.') : 'Cash, costs and payouts agree.';
+  S.push({ k: 'rec', t: 'Money matched', ok: imp && valid && cashOk && costOk && payOk, why: imp ? recWhy : 'Waiting for the files.' });
+  S.push({ k: 'exc', t: 'Issues dealt with', ok: imp && issuesN === 0, why: issuesN ? `${issuesN} issue${issuesN > 1 ? 's' : ''} still open${bad ? ` (${bad} serious)` : ''}.` : 'No open issue.' });
+  const reviewed = !!rev || !!lock;
+  S.push({ k: 'rev', t: 'Reviewed by a person', ok: reviewed, why: reviewed ? (rev ? `Reviewed by ${rev.by} on ${String(rev.at).slice(0, 10)}.` : 'Locked, so it was approved.') : 'Nobody has marked it as reviewed.' });
+  S.push({ k: 'lock', t: 'Approved and locked', ok: !!lock, why: lock ? 'Locked. The numbers are fixed.' : 'Not locked yet.' });
+  let level = 0; while (level < S.length && S[level].ok) level++;
+  const verified = S[0].ok && S[1].ok && S[2].ok && S[3].ok;
+  return { S, level, verified, bad, canReview: S[0].ok && S[1].ok && S[3].ok && !reviewed };
+}
+function statusCard(a, m, A) {
+  const st = auditStatus(a, m, A); if (!st) return '';
+  const head = st.verified ? 'Checked: money matched and no open issue' : st.bad ? 'Not verified: serious issue open' : 'Not verified yet';
+  const cls = st.verified ? 'ok' : st.bad ? 'bad' : 'warn';
+  return `<div class="card score s-${cls}"><div class="row between"><h2>Audit status: ${head} ${help('The tool never calls a month “verified” just because the maths ran. Each step below must be done first. The score is only a hint.')}</h2>${st.canReview ? `<button class="btn sm pri" data-act="auReview" data-acct="${a.id}" data-month="${m}" data-help="Marks that a person looked at this month. You can do it once files are in, the data is checked and the issues are dealt with.">I reviewed it</button>` : ''}</div>
+  <ol class="note" style="margin:6px 0 0;padding-left:20px">${st.S.map((s, i) => `<li style="margin:2px 0">${s.ok ? '✓' : i === st.level ? '→' : '○'} <b>${esc(s.t)}</b> — ${esc(s.why)}</li>`).join('')}</ol></div>`;
+}
+const _sum5 = T.summary; T.summary = (a, m, A) => statusCard(a, m, A) + _sum5(a, m, A);
+Object.assign(ACT, {
+  auReview: async el => {
+    const a = acctById(el.dataset.acct), m = el.dataset.month, A = getAudit(a.id, m), st = auditStatus(a, m, A);
+    if (!st || !st.canReview) { toast('Finish the earlier steps first.'); return; }
+    K.prefs.reviewed = Object.assign({}, K.prefs.reviewed || {}, { [a.id + '|' + m]: { by: whoAmI() || (K.prefs.owner || 'Owner'), at: new Date().toISOString() } });
+    await save('prefs'); log(`Reviewed ${a.name} ${m}`); toast('Marked as reviewed.'); render();
+  }
+});
+
+// ---------- where every number came from: file → sheet → row ----------
+function lineageFor(acctId, month, order) {
+  const out = [];
+  activeParts().filter(p => p.acct === acctId && p.month === month).forEach(p => {
+    const f = (p._file && p._file.name) || '?';
+    if (p.kind === 'ebay_txn') (p.lines || []).filter(l => l.order === order).forEach(l => out.push({ file: f, sheet: p.sheet || '', row: l.r + 1, what: l.type + (l.desc ? ' · ' + l.desc : ''), field: 'Net amount', amount: l.net }));
+    else if (p.kind === 'va_sheet' || p.kind === 'market_sales') (p.rows || []).filter(r => r.order === order).forEach(r => out.push({ file: f, sheet: p.sheet || '', row: r.row || null, what: p.kind === 'va_sheet' ? 'VA cost' + (r.ae ? ' · AliExpress ' + r.ae : '') : (r.type || 'Sale'), field: p.kind === 'va_sheet' ? 'Cost' : 'Total', amount: p.kind === 'va_sheet' ? r.cost : (r.total != null ? r.total : r.amount) }));
+  });
+  return out;
+}
+const _od5 = orderDrawer; orderDrawer = function (o) {
+  _od5(o);
+  try {
+    const L = lineageFor(S.acct, S.month, o); const el = $('#layer'); if (!el || !L.length) return; const n = el.querySelector('.note'); if (!n) return;
+    n.insertAdjacentHTML('afterend', `<div class="card" style="margin:8px 0"><h3 style="margin:0 0 4px">Where these numbers come from ${help('Each line below is a row in one of your files. Open the file and go to that row to see the original.')}</h3><div class="tw"><table><thead><tr><th>File</th><th>Sheet</th><th class="r">Row</th><th>What</th><th class="r">Amount</th></tr></thead><tbody>${L.slice(0, 40).map(x => `<tr><td>${esc(x.file)}</td><td>${esc(x.sheet)}</td><td class="r num">${x.row || '–'}</td><td>${esc(x.what)}</td><td class="r">${x.amount == null ? '–' : money(x.amount)}</td></tr>`).join('')}</tbody></table></div></div>`);
+  } catch (e) { }
+};
+
+// ---------- locked months remember how they were made ----------
+const _doLock5 = doLock; doLock = async function (note) {
+  // the input list is taken before locking, because locking may move old files to the archive
+  let inp = []; try { inp = activeParts().filter(p => p.acct === S.acct && p.month === S.month).map(p => ({ file: p._file.name, id: p._file.id, sha256: p._file.sha256 || '', kind: p.kind })); } catch (e) { }
+  await _doLock5(note);
+  try {
+    const k = S.acct + '|' + S.month, L = K.locks[k];
+    if (L && !L.meta) { L.meta = { engine: APPV, schema: 1, inputs: inp, inputsHash: await AD.sha256(JSON.stringify(inp.map(x => x.id + ':' + x.kind).sort())) }; await save('locks'); }
+  } catch (e) { logErr(e, 'lock meta'); }
+};
+
+// ---------- "Check my data": read-only health check of everything stored (changes nothing) ----------
+const SCHEMA_VERSION = 1;
+function dataCheck() {
+  const P = [], bad = (where, why, id) => P.push({ where, why, id: id || '' });
+  const isNum = v => typeof v === 'number' && isFinite(v);
+  const ids = new Set(); (K.acc || []).forEach(a => { if (!a || !a.id) bad('Accounts', 'An account has no id'); else if (ids.has(a.id)) bad('Accounts', 'Two accounts share the same id', a.id); else ids.add(a.id); if (a && !a.name) bad('Accounts', 'An account has no name', a.id); });
+  (K.stockIn || []).forEach(s => { if (!s.sku) bad('Stock in', 'A line has no SKU', s.id); if (!isNum(s.qty)) bad('Stock in', 'Quantity is not a number', s.sku); if (!isNum(s.cost) || s.cost < 0) bad('Stock in', 'Cost is missing or negative', s.sku); });
+  (K.expenses || []).forEach(e => { if (!isNum(e.amount ?? e.amt)) bad('Expenses', 'Amount is not a number', e.id || e.name); });
+  Object.entries(K.locks || {}).forEach(([k, L]) => { if (!L || !isNum(L.net)) bad('Locked months', 'A locked month has no saved net', k); const [a] = k.split('|'); if (!ids.has(a)) bad('Locked months', 'A locked month belongs to an account that is not in the list', k); });
+  (FILES || []).forEach(f => { if (!Array.isArray(f.parts)) bad('Files', 'A file has no parts list', f.name); });
+  const noSha = (FILES || []).filter(f => !f.sha256).length;
+  return { problems: P, files: (FILES || []).length, accounts: (K.acc || []).length, locked: Object.keys(K.locks || {}).length, withoutSha: noSha, schema: SCHEMA_VERSION };
+}
+function dataCheckCard() {
+  return `<div class="card"><div class="row between"><h2>Check my data ${help('Reads everything stored in the tool and lists anything that looks wrong. It only reads. It never changes or deletes anything.')}</h2><button class="btn sm" data-act="dataCheck">Check now</button></div><p class="note" id="dcOut">Nothing is changed by this check.</p></div>`;
+}
+const _vset5 = V.settings; V.settings = () => _vset5() + dataCheckCard();
+Object.assign(ACT, {
+  dataCheck: () => {
+    const r = dataCheck(), o = $('#dcOut'); if (!o) return;
+    o.innerHTML = r.problems.length ? `<b>${r.problems.length} thing${r.problems.length > 1 ? 's' : ''} to look at</b> (${r.accounts} accounts, ${r.files} files, ${r.locked} locked months):<ul>${r.problems.slice(0, 40).map(p => `<li>${esc(p.where)}: ${esc(p.why)}${p.id ? ' (' + esc(p.id) + ')' : ''}</li>`).join('')}</ul>` : `✓ All good: ${r.accounts} accounts, ${r.files} files, ${r.locked} locked months.${r.withoutSha ? ` ${r.withoutSha} older files have no SHA-256 yet (they get one when they are added again).` : ''}`;
   }
 });
 
