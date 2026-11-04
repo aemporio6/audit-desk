@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.7.0';
+const APPV = '2.8.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -2318,7 +2318,7 @@ async function gwSignIn() {
 }
 const gwOk = () => GW.token && Date.now() < GW.exp;
 async function gwAfterLogin() {
-  try { const r = await gwFetch('https://www.googleapis.com/drive/v3/about?fields=user'); const j = await r.json(); GW.email = (j.user && j.user.emailAddress) || ''; localStorage.setItem('ad-gmail', GW.email); } catch (e) { }
+  try { const r = await gwFetch('https://www.googleapis.com/drive/v3/about?fields=user'); const j = await r.json(); GW.email = (j.user && j.user.emailAddress) || ''; const prev = localStorage.getItem('ad-data-for') || ''; if (GW.email && prev && prev !== GW.email.toLowerCase() && typeof wipeLocalFor === 'function') { await wipeLocalFor(GW.email); return; } if (GW.email) localStorage.setItem('ad-data-for', GW.email.toLowerCase()); localStorage.setItem('ad-gmail', GW.email); if (typeof purgeSeed === 'function') await purgeSeed(); } catch (e) { }
   DRV.mcp = GDRIVE; SYNC.db = SYNC.db || null;
   if (!SYNC.db) syncStart(GWDB);
   toast(`Connected to Google Drive${GW.email ? ' (' + GW.email + ')' : ''}.`); render(); driveSync(false);
@@ -2403,7 +2403,7 @@ function gwBanner() {
   if (!IS_WEB) return '';
   if (ENC.need && gwOk()) return `<div class="check w" style="justify-content:space-between;flex-wrap:wrap;gap:8px"><span>Your data in Drive is locked. Type your passphrase to open it on this device.</span><span class="row"><input class="in" id="encPass" type="password" placeholder="Passphrase" autocomplete="current-password"><button class="btn sm pri" data-act="encUnlock">Unlock</button><button class="btn sm" data-act="encForgot" data-help="If you lost the passphrase: the locked file is kept aside in Drive, and this device starts a fresh file from the data it has.">I forgot it</button></span></div>`;
   if (gwOk() && !GW.need) return '';
-  return `<div class="check w" style="justify-content:space-between;flex-wrap:wrap">${GW.email ? `Tap to reconnect Google Drive (${esc(GW.email)}).` : 'Connect your Google Drive (aemporio6@gmail.com) so the tool reads the files by itself and keeps the same data on every device.'} <button class="btn sm pri" data-act="gwSignIn">${GW.email ? 'Reconnect Google' : 'Sign in with Google'}</button></div>`;
+  return `<div class="check w" style="justify-content:space-between;flex-wrap:wrap">${GW.email ? `Tap to reconnect Google Drive (${esc(GW.email)}).` : 'Connect your own Google Drive so the tool reads the files by itself and keeps the same data on every device.'} <button class="btn sm pri" data-act="gwSignIn">${GW.email ? 'Reconnect Google' : 'Sign in with Google'}</button></div>`;
 }
 Object.assign(ACT, { gwSignIn: () => gwSignIn() });
 
@@ -2417,7 +2417,7 @@ const DEFAULT_ROOTS = [
   { id: '1ee_CU-heAxheLth_2LyoU8b43iBk0Z5Pkzq4QMi6LAQ', name: 'Bizmart Uk (VA Google Sheet)' },
   { id: '1csVcx33eEm74tV9To6EcdOnAmI7x9bBA2GWF84ZNpJM', name: 'eBay STOCK (cost list)' }
 ];
-const roots = () => { if (!K.prefs.driveRoots) K.prefs.driveRoots = DEFAULT_ROOTS.slice(); return K.prefs.driveRoots; };
+const roots = () => { if (!K.prefs.driveRoots) K.prefs.driveRoots = (typeof GW !== 'undefined' && GW.email && !/^aemporio6@gmail\.com$/i.test(GW.email)) ? [] : DEFAULT_ROOTS.slice(); return K.prefs.driveRoots; };
 const driveId = s => { s = String(s || '').trim(); const m = s.match(/\/(?:d|folders)\/([A-Za-z0-9_-]{20,})/) || s.match(/[?&]id=([A-Za-z0-9_-]{20,})/) || s.match(/^([A-Za-z0-9_-]{20,})$/); return m ? m[1] : null; };
 async function gcall(tool, input) { const r = await DRV.mcp.callTool(GD, tool, input, { cache: false }); return r; }
 const pay = r => r && r.payload !== undefined ? r.payload : (r && r.structuredContent) || r;
@@ -4064,6 +4064,95 @@ function rulesCard() {
 }
 const _vset8r = V.settings; V.settings = () => _vset8r() + rulesCard();
 Object.assign(ACT, { rulesDl: () => saveFile('Audit Desk rules ' + AD.RULES_VERSION + '.json', new Blob([JSON.stringify(AD.rulesData(), null, 2)], { type: 'application/json' })) });
+
+// v2.8 — everyone uses their own Google Drive (gateway), Refresh button, and importing from a Drive link.
+const OWNER_EMAIL = /^aemporio6@gmail\.com$/i;
+// a different person signed in: the first data on this device was the owner's starting sample, not theirs. Remove it.
+async function purgeSeed() {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB || !GW.email || OWNER_EMAIL.test(GW.email)) return;
+  const ids = (K.acc || []).map(a => a.id).join(); if (ids !== DEFAULT_ACC.map(a => a.id).join() || FILES.length) return;
+  K.acc = []; K.prefs.driveRoots = []; K.prefs.owner = GW.email.split('@')[0] + ' (Owner)'; await save('acc', 'prefs');
+}
+// another Google account on the same browser: its data must never mix with the first one's
+async function wipeLocalFor(email) {
+  try { toast('Switching to ' + email + '. Loading its own data…'); } catch (e) { }
+  try { await new Promise(res => { try { DB.db && DB.db.close(); } catch (e) { } const r = indexedDB.deleteDatabase('audit-desk'); r.onsuccess = r.onerror = r.onblocked = () => res(); setTimeout(res, 1500); }); } catch (e) { }
+  ['ad-ek', 'ad-gtok'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { } });
+  try { localStorage.setItem('ad-data-for', email.toLowerCase()); localStorage.setItem('ad-gmail', email); } catch (e) { }
+  location.reload();
+}
+// invite link: opening it remembers who invited you
+try { const m = String(location.hash).match(/join=([^&]+)/); if (m) { localStorage.setItem('ad-join', decodeURIComponent(m[1])); history.replaceState(null, '', location.pathname + location.search); } } catch (e) { }
+const joinFrom = () => { try { return localStorage.getItem('ad-join') || ''; } catch (e) { return ''; } };
+function gatewayCard() {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB || (gwOk() && GW.email)) return '';
+  const j = joinFrom();
+  return `<div class="card"><h2>Welcome to Audit Desk</h2>
+  <p>${j ? `<b>${esc(j)}</b> invited you to their team.` : 'Everyone uses their own Google account.'} Tap the button and choose <b>your own</b> Google account. Your data is kept in <b>your</b> Google Drive, so nobody else can see it unless you share it.</p>
+  <ul class="note"><li><b>Your own business:</b> sign in. The tool makes your private workspace in your Drive.</li><li><b>Joining a team:</b> sign in with the Google account the owner added. You will see only the accounts they gave you.</li></ul>
+  <div class="row"><button class="btn pri" data-act="gwSignIn">Sign in with Google</button></div></div>`;
+}
+function inviteCard() {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB || !gwOk() || whoAmI()) return '';
+  const url = location.origin + location.pathname + '#join=' + encodeURIComponent(GW.email);
+  return `<div class="card"><h2>Invite a team member ${help('Send this link. The person opens it, signs in with their own Google account and sees only the accounts you gave them. You still add their e-mail in Team members, so Google lets them in.')}</h2>
+  <div class="addrow"><input class="in" id="invUrl" readonly value="${esc(url)}"><button class="btn sm" data-act="invCopy">Copy</button><a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent('Open this link and sign in with your Google account to join my Audit Desk team: ' + url)}">WhatsApp</a></div>
+  <p class="note">Their data and yours stay in separate Drive files. Nothing is shared except the accounts you choose.</p></div>`;
+}
+const _vhome9 = V.home; V.home = function () { return gatewayCard() + _vhome9.apply(this, arguments); };
+const _vset9 = V.settings; V.settings = () => inviteCard() + _vset9();
+
+// ---- Refresh everything ----
+const RF = { busy: false };
+async function refreshAll() {
+  if (RF.busy) return; RF.busy = true; const b = $('#rfBtn'); if (b) { b.disabled = true; b.textContent = '⟳ Refreshing…'; }
+  try {
+    invalidate();
+    if (typeof IS_WEB !== 'undefined' && IS_WEB) {
+      if (!gwOk()) { await gwSignIn(); }
+      if (gwOk()) { try { await GWDB.poll(); } catch (e) { logErr(e, 'refresh poll'); } try { await memberSync(); } catch (e) { } await driveSync(true); }
+    } else if (DRV.mcp) await driveSync(true);
+    invalidate(); if (typeof dataCheck === 'function') { } render(); toast('Everything is refreshed.');
+  } catch (e) { logErr(e, 'refresh'); toast('Could not refresh everything. Try again in a moment.'); }
+  RF.busy = false; const b2 = $('#rfBtn'); if (b2) { b2.disabled = false; b2.textContent = '⟳ Refresh'; }
+}
+function addRefresh() { const t = document.querySelector('#top .toprow'); if (t && !$('#rfBtn')) { const b = document.createElement('button'); b.id = 'rfBtn'; b.className = 'btn sm'; b.type = 'button'; b.setAttribute('data-act', 'refreshAll'); b.title = 'Read everything again: Google Drive data, team changes, new files, and recalculate all audits'; b.textContent = '⟳ Refresh'; t.appendChild(b); } }
+const _render9 = render; render = function () { const r = _render9.apply(this, arguments); try { addRefresh(); } catch (e) { } return r; };
+
+// ---- import from a Drive link ----
+function linkCard() {
+  const out = (DRV.linkOut || []).map(x => `<li class="${x.err ? 'bad' : ''}">${esc(x.what)}${x.err ? ' — ' + esc(x.err) : ' — ' + esc(x.msg || '')}</li>`).join('');
+  return `<div class="card"><h2>Import from a Google Drive link ${help('Paste a link to a file or a folder (for example the folder your VA sent). The tool opens it with your Google account, reads every file in it, puts each file on the right account and month, and starts the audit. It keeps watching that folder for new files.')}</h2>
+  <textarea class="in" id="lnkIn" rows="2" placeholder="Paste one or more Google Drive links (folder, Google Sheet, Excel, CSV, PDF…)"></textarea>
+  <div class="addrow"><input class="in" id="lnkLabel" placeholder="From whom? (optional, e.g. VA Waqas)"><button class="btn pri" data-act="linkImport" ${DRV.busy ? 'disabled' : ''}>Read this link now</button></div>
+  <p class="note">If the tool says it has no access: ask the sender to share the folder with <b>${esc(GW.email || 'your Google account')}</b> (view is enough), then press the button again.</p>
+  ${out ? `<ul class="note" style="margin-top:8px">${out}</ul>` : ''}</div>`;
+}
+const _vadd9 = V.add; V.add = function () { const h = _vadd9.apply(this, arguments); const i = h.indexOf(driveCard()); return i > -1 ? h.slice(0, i) + linkCard() + h.slice(i) : linkCard() + h; };
+async function linkImport() {
+  const links = ($('#lnkIn').value || '').split(/[\s,]+/).filter(Boolean), label = ($('#lnkLabel').value || '').trim();
+  if (!links.length) { toast('Paste a Google Drive link first.'); return; }
+  if (typeof IS_WEB !== 'undefined' && IS_WEB && !gwOk()) { toast('Sign in with Google first.'); gwSignIn(); return; }
+  if (!DRV.mcp) { toast('Google Drive is not connected yet.'); return; }
+  DRV.linkOut = []; const keep = $('#lnkIn').value;
+  for (const l of links) {
+    const id = driveId(l);
+    if (!id) { DRV.linkOut.push({ what: l.slice(0, 60), err: 'This is not a Google Drive link. For Dropbox, OneDrive or WeTransfer, download the file and drop it in “Add a file”.' }); continue; }
+    let meta = null; try { meta = pay(await gcall('get_file_metadata', { fileId: id, excludeContentSnippets: true })); } catch (e) { }
+    if (!meta || !meta.id) { DRV.linkOut.push({ what: l.slice(0, 60), err: `No access yet. Ask the sender to share it with ${GW.email || 'your Google account'}.` }); continue; }
+    let r = roots().find(x => x.id === id); if (!r) { r = { id, name: meta.title || 'Drive link' }; roots().push(r); }
+    r.name = meta.title || r.name; r.fromLink = true; if (label) r.from = label; r.added = r.added || new Date().toISOString(); r.bad = false;
+    await save('prefs'); DRV.only = id; try { await driveSync(true); } finally { DRV.only = null; }
+    DRV.linkOut.push({ what: (meta.title || 'Drive link') + (label ? ' (' + label + ')' : ''), msg: DRV.msg });
+  }
+  log('Drive link read: ' + DRV.linkOut.map(x => x.what).join(', ')); render();
+  const el = $('#lnkIn'); if (el && !DRV.linkOut.every(x => x.err)) el.value = ''; else if (el) el.value = keep;
+  if (DRV.linkOut.some(x => !x.err)) toast('Done. The files are placed and the audits are updated. Check Home for what is still missing.');
+}
+Object.assign(ACT, {
+  refreshAll: () => refreshAll(), linkImport: () => linkImport(),
+  invCopy: () => { const e = $('#invUrl'); if (!e) return; e.select(); try { navigator.clipboard.writeText(e.value); } catch (x) { document.execCommand('copy'); } toast('Invite link copied.'); }
+});
 
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
