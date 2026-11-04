@@ -995,7 +995,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.5.0';
+const APPV = '2.6.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -2362,7 +2362,10 @@ async function encUnwrap(text) {
 }
 const GWDB = (() => {
   const subs = {}; const last = {}; let fileId = null, timer = null, busy = Promise.resolve();
-  async function find() { if (fileId) return fileId; try { const s = new URL(DAPI); s.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and sharedWithMe = true"); s.searchParams.set('fields', 'files(id,owners(emailAddress))'); const js = await (await gwFetch(s)).json(); if (js.files && js.files[0]) return (fileId = js.files[0].id); } catch (e) { } const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id,modifiedTime)'); u.searchParams.set('orderBy', 'modifiedTime desc'); const j = await (await gwFetch(u)).json(); if (j.files && j.files[0]) return (fileId = j.files[0].id); const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: 'Audit Desk data.json', mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob(['{}'], { type: 'application/json' })); const c = await (await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd })).json(); return (fileId = c.id); }
+  async function find() { if (fileId) return fileId;
+    // a team member gets their OWN file (only their accounts); the owner's file is never shared with them
+    try { const em = (typeof GW !== 'undefined' && GW.email) || ''; if (em) { const s0 = new URL(DAPI); s0.searchParams.set('q', `name = 'Audit Desk member data (${em.toLowerCase()}).json' and trashed = false and sharedWithMe = true`); s0.searchParams.set('fields', 'files(id)'); const j0 = await (await gwFetch(s0)).json(); if (j0.files && j0.files[0]) return (fileId = j0.files[0].id); } } catch (e) { if (e.code === 'needs_reauth') throw e; }
+    try { const s = new URL(DAPI); s.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and sharedWithMe = true"); s.searchParams.set('fields', 'files(id,owners(emailAddress))'); const js = await (await gwFetch(s)).json(); if (js.files && js.files[0]) return (fileId = js.files[0].id); } catch (e) { } const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id,modifiedTime)'); u.searchParams.set('orderBy', 'modifiedTime desc'); const j = await (await gwFetch(u)).json(); if (j.files && j.files[0]) return (fileId = j.files[0].id); const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: 'Audit Desk data.json', mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob(['{}'], { type: 'application/json' })); const c = await (await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd })).json(); return (fileId = c.id); }
   async function readAll() { const id = await find(); const t = await (await gwFetch(`${DAPI}/${id}?alt=media`)).text(); return encUnwrap(t); }
   async function poll() { if (!gwOk()) return; try { const all = await readAll(); Object.keys(subs).forEach(path => { const k = path.split('/')[1], v = all[k], s = JSON.stringify(v || null); if (last[path] === s) return; last[path] = s; subs[path].forEach(f => f({ exists: !!v, data: () => v, fromCache: false, hasPendingWrites: false })); }); } catch (e) { if (e.code === 'needs_pass') { if (K.reg && K.acc) { try { shell(); render(); } catch (x) { } } } else if (e.code !== 'needs_reauth') logErr(e, 'drive data'); } }
   async function rewrite(plain) { const all = await readAll(); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all, plain) }); }
@@ -2370,7 +2373,7 @@ const GWDB = (() => {
   return {
     poll, rewrite, setAside, readOnly: readAll, writeAll: async all => { const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all) }); }, refresh: async () => { await readAll(); await poll(); },
     doc: path => ({
-      set: body => (busy = busy.then(async () => { const all = await readAll(); all[path.split('/')[1]] = body; last[path] = JSON.stringify(body); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all) }); })),
+      set: body => (busy = busy.then(async () => { if (typeof ME !== 'undefined' && ME && ME.role === 'Investor') return; /* view-only members never write */ const all = await readAll(); all[path.split('/')[1]] = body; last[path] = JSON.stringify(body); const id = await find(); await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: await encWrap(all) }); })),
       onSnapshot: next => { (subs[path] = subs[path] || []).push(next); clearTimeout(timer); timer = setTimeout(() => { poll(); setInterval(poll, 45000); document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); }); }, 50); return () => { }; }
     })
   };
@@ -3916,6 +3919,77 @@ Object.assign(ACT, {
 });
 // the audit status uses the same matching
 (function () { const _as = auditStatus; auditStatus = function (a, m, A) { const st = _as(a, m, A); if (!st) return st; try { const rc = reconFor(a, m, A); const s = st.S.find(x => x.k === 'rec'); if (s && rc.P.length) { const proven = rc.res.summary.complete; const costOk = (A.nCostMissing || 0) === 0, cashOk = A.kind === 'ebay' ? Math.abs(A.cash.diff) <= 1 : true; s.ok = st.S[0].ok && st.S[1].ok && cashOk && costOk && proven; s.why = !cashOk ? `Cash is out by ${fmt(A.cash.diff)}.` : !costOk ? `${A.nCostMissing} orders have no cost.` : proven ? 'Cash, costs and payouts agree (payouts found in the bank).' : `${rc.res.summary.leftOnly + rc.res.summary.review} payouts are not proven in the bank yet (see Matches).`; let lv = 0; while (lv < st.S.length && st.S[lv].ok) lv++; st.level = lv; st.verified = st.S[0].ok && st.S[1].ok && st.S[2].ok && st.S[3].ok; } } catch (e) { } return st; }; })();
+
+// v2.6 — team members get their own file with only their accounts (a real data boundary).
+// The owner's data file is never shared with a member. Their changes flow back to the owner (3-way merge, owner wins on conflict).
+const mbName = e => `Audit Desk member data (${String(e).toLowerCase()}).json`;
+const MB_BACK = ['iss', 'matches', 'shots', 'returns', 'offRefunds']; // the only keys a member may change
+const MB_SCOPED = ['iss', 'locks', 'shots', 'history', 'matches', 'offRefunds', 'returns'];
+const mbAcct = k => String(k).split('|')[0];
+function memberFilter(m) {
+  const all = !(m.accounts || []).length, ok = id => all || m.accounts.includes(id), pick = o => Object.fromEntries(Object.entries(o || {}).filter(([k]) => ok(mbAcct(k))));
+  const kv = {}; KEYS.forEach(k => { kv[k] = Array.isArray(K[k]) ? [] : (K[k] && typeof K[k] === 'object' ? {} : K[k]); });
+  kv.reg = K.reg; kv.fields = K.fields; kv.acc = K.acc.filter(a => ok(a.id)); MB_SCOPED.forEach(k => { kv[k] = pick(K[k]); });
+  kv.expenses = (K.expenses || []).filter(e => ok(e.acct)); kv.skips = K.skips || {};
+  kv.stockIn = kv.acc.some(a => a.type === 'Own stock' || a.type === 'Mixed') ? K.stockIn : [];
+  kv.prefs = { owner: K.prefs.owner, splitBase: K.prefs.splitBase, role: m.role, viewAs: m.role, members: [{ email: m.email, name: m.name, role: m.role, accounts: m.accounts || [] }] };
+  return JSON.parse(JSON.stringify(kv));
+}
+const mbJson = o => JSON.stringify(o);
+async function mbFile(m, create) {
+  if (m.fileId) return m.fileId;
+  const u = new URL(DAPI); u.searchParams.set('q', `name = '${mbName(m.email)}' and trashed = false and 'me' in owners`); u.searchParams.set('fields', 'files(id)'); const j = await (await gwFetch(u)).json();
+  if (j.files && j.files[0]) return (m.fileId = j.files[0].id); if (!create) return '';
+  const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: mbName(m.email), mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob(['{}'], { type: 'application/json' }));
+  return (m.fileId = (await (await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd })).json()).id);
+}
+async function mbWrite(id, kv) { await gwFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: mbJson(kv) }); }
+// bring a member's changes back: only allowed keys, only their accounts, only what they changed since the owner last published
+function mbMerge(m, kvM, base) {
+  const all = !(m.accounts || []).length, ok = id => all || m.accounts.includes(id); const done = [], conflicts = [];
+  MB_BACK.forEach(key => { const cur = K[key] || (K[key] = {}); Object.entries((kvM && kvM[key]) || {}).forEach(([k, v]) => {
+    if (!ok(mbAcct(k))) return; const was = base && base[key] ? base[key][k] : undefined; if (mbJson(v) === mbJson(was)) return;
+    if (mbJson(cur[k]) === mbJson(was)) { cur[k] = v; if (!done.includes(key)) done.push(key); } else if (mbJson(cur[k]) !== mbJson(v)) conflicts.push(key + ' ' + k);
+  }); });
+  return { done, conflicts };
+}
+async function memberSync(only) {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB || !gwOk() || whoAmI() || MB.busy) return; MB.busy = true; const out = [];
+  try {
+    for (const m of (K.prefs.members || [])) {
+      if (only && m.email !== only) continue; const id = await mbFile(m, false); if (!id) continue;
+      const base = await DB.get('kv', 'mbase:' + m.email).catch(() => null); let kvM = null; try { kvM = JSON.parse(await (await gwFetch(`${DAPI}/${id}?alt=media`)).text()); } catch (e) { }
+      if (kvM && base) { const r = mbMerge(m, kvM, base); if (r.done.length) { await save(...r.done); invalidate(); log(`Took changes from ${m.email}: ${r.done.join(', ')}`); } if (r.conflicts.length) { log(`Conflict with ${m.email} (kept yours): ${r.conflicts.slice(0, 5).join('; ')}`); out.push(...r.conflicts); } }
+      const kv = memberFilter(m), h = await AD.sha256(mbJson(kv)), last = await DB.get('kv', 'mhash:' + m.email).catch(() => '');
+      if (h !== last) { await mbWrite(id, kv); await DB.put('kv', 'mbase:' + m.email, kv); await DB.put('kv', 'mhash:' + m.email, h); }
+    }
+  } catch (e) { if (e.code !== 'needs_reauth') logErr(e, 'member sync'); } finally { MB.busy = false; }
+  return out;
+}
+const MB = { busy: false };
+setInterval(() => memberSync(), 120000); setTimeout(() => memberSync(), 15000);
+async function mbRevoke(m) {
+  // take their access away for real: member file, old shares of the main file, and the folders
+  const ids = []; let mid = ''; try { mid = await mbFile(m, false); if (mid) ids.push(mid); } catch (e) { } try { const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id)'); ((await (await gwFetch(u)).json()).files || []).forEach(f => ids.push(f.id)); } catch (e) { }
+  try { roots().forEach(r => ids.push(r.id)); } catch (e) { }
+  for (const id of ids) { try { const L = await (await gwFetch(`${DAPI}/${id}/permissions?fields=permissions(id,emailAddress)&supportsAllDrives=true`)).json(); for (const p of (L.permissions || [])) if (String(p.emailAddress || '').toLowerCase() === m.email.toLowerCase()) await gwFetch(`${DAPI}/${id}/permissions/${p.id}?supportsAllDrives=true`, { method: 'DELETE' }); } catch (e) { } }
+  if (mid) { try { await gwFetch(`${DAPI}/${mid}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"trashed":true}' }); } catch (e) { } }
+  await DB.del('kv', 'mbase:' + m.email).catch(() => { }); await DB.del('kv', 'mhash:' + m.email).catch(() => { });
+}
+shareWith = async function (email, role, withFolders) {
+  const m = (K.prefs.members || []).find(x => x.email === email); if (!m) return 0;
+  const ids = []; const fid = await mbFile(m, true); ids.push([fid, role === 'Investor' ? 'reader' : 'writer']);
+  if (withFolders) roots().filter(r => !r.bad).forEach(r => ids.push([r.id, role === 'Investor' ? 'reader' : 'writer']));
+  let ok = 0; for (const [id, rl] of ids) { try { await gwFetch(`${DAPI}/${id}/permissions?sendNotificationEmail=true&supportsAllDrives=true`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'user', role: rl, emailAddress: email }) }); ok++; } catch (e) { logErr(e, 'share with ' + email); } }
+  // the owner's own file is NOT shared; if it was shared with this person before, that is removed
+  try { const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id)'); for (const f of ((await (await gwFetch(u)).json()).files || [])) { const L = await (await gwFetch(`${DAPI}/${f.id}/permissions?fields=permissions(id,emailAddress)&supportsAllDrives=true`)).json(); for (const p of (L.permissions || [])) if (String(p.emailAddress || '').toLowerCase() === email.toLowerCase()) await gwFetch(`${DAPI}/${f.id}/permissions/${p.id}?supportsAllDrives=true`, { method: 'DELETE' }); } } catch (e) { }
+  await DB.del('kv', 'mhash:' + email).catch(() => { }); await memberSync(email); return ok;
+};
+const _mbDel7 = ACT.mbDel;
+Object.assign(ACT, {
+  mbDel: async el => { const m = (K.prefs.members || [])[+el.dataset.i]; if (m && typeof IS_WEB !== 'undefined' && IS_WEB && gwOk()) { try { await mbRevoke(m); } catch (e) { logErr(e, 'revoke'); } } (K.prefs.members || []).splice(+el.dataset.i, 1); await save('prefs'); toast('Removed. Their access to the files and folders is taken away.'); render(); },
+  mbSync: async () => { const c = await memberSync(); toast(c && c.length ? `${c.length} change(s) from members were not taken because you changed them too.` : 'Members are up to date.'); }
+});
 
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
