@@ -498,7 +498,7 @@ R.push({
 R.push({
   kind: 'stock_cost', label: 'Stock cost list (cost per SKU)', platform: 'Any',
   detect(sh) {
-    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, ['SKU', 'Custom label', 'Seller SKU']) > -1 && findCol(H, ['Total', 'Total cost', 'Unit cost', 'Cost price', 'Landed cost', 'Cost']) > -1 && findCol(H, VA.order) < 0 && findCol(H, MK_ORDER) < 0; }, 20);
+    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, ['SKU', 'Custom label', 'Seller SKU']) > -1 && findCol(H, ['Total', 'Total cost', 'Unit cost', 'Cost price', 'Landed cost', 'Cost']) > -1 && findCol(H, VA.order) < 0 && mkOi(H) < 0; }, 20);
     return hi > -1 ? 0.8 : 0;
   },
   parse(sh) {
@@ -608,33 +608,38 @@ R.push({
   }
 });
 
+const mkOi = H => { let i = findCol(H, MK_ORDER); if (i > -1) return i; const n = H.map(norm); return n.findIndex(h => ['order', 'ordername', 'orderreference', 'suborderid'].includes(h)); };
 const MK_ORDER = ['Order/adjustment ID', 'Order ID', 'order id', 'Order Number', 'amazon-order-id', 'order-id', 'Order No', 'Related order ID'];
 // Other marketplaces: basic sales file (OnBuy, TikTok Shop, Amazon, Temu, Shopify…) — order id + date + amount
 const MK = [
   { platform: 'OnBuy', test: h => h.includes('onbuy') || (h.includes('orderid') && h.includes('commission') && h.includes('sitename')) },
+  { platform: 'Temu', test: h => h.includes('temu') || h.includes('parentorderid') },
   { platform: 'TikTok Shop', test: h => h.includes('settlementamount') || (h.includes('orderid') && h.includes('tiktok')) || h.includes('skuunitoriginalprice') },
   { platform: 'Amazon', test: h => h.includes('amazonorderid') || h.includes('settlementid') || h.includes('marketplacefacilitatortax') },
   { platform: 'Temu', test: h => h.includes('temu') || h.includes('parentorderid') },
-  { platform: 'Shopify', test: h => h.includes('financialstatus') && h.includes('fulfillmentstatus') },
-  { platform: 'Etsy', test: h => h.includes('etsy') || (h.includes('saledate') && h.includes('orderid') && h.includes('ordervalue')) }
+  { platform: 'Shopify', test: h => (h.includes('financialstatus') && h.includes('fulfillmentstatus')) || (h.includes('payoutid') && (h.includes('cardbrand') || h.includes('presentmentamount'))) },
+  { platform: 'Etsy', test: h => h.includes('etsy') || (h.includes('saledate') && h.includes('orderid') && h.includes('ordervalue')) || h.includes('feestaxes') }
 ];
 R.push({
   kind: 'market_sales', label: 'Marketplace sales / settlement file', platform: 'Other',
   detect(sh, name) {
-    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, MK_ORDER) > -1 && findCol(H, ['Total', 'Amount', 'Order total', 'Settlement amount', 'Total settlement amount', 'Order value', 'item-price', 'Gross', 'Price']) > -1; }, 15);
+    const hi = headerRow(sh.rows, r => { const H = r.map(String); return mkOi(H) > -1 && findCol(H, ['Total', 'Amount', 'Order total', 'Settlement amount', 'Total settlement amount', 'Order value', 'item-price', 'Gross', 'Price']) > -1; }, 15);
     if (hi < 0) return 0; const h = sh.rows[hi].map(norm).join('|') + norm(name);
     return MK.some(m => m.test(h)) ? 0.85 : 0.5;
   },
   parse(sh, name) {
-    const rows = sh.rows, hi = headerRow(rows, r => findCol(r.map(String), MK_ORDER) > -1, 15), H = rows[hi].map(String);
+    const rows = sh.rows, hi = headerRow(rows, r => mkOi(r.map(String)) > -1, 15), H = rows[hi].map(String);
     const h = H.map(norm).join('|') + norm(name); const platform = (MK.find(m => m.test(h)) || { platform: 'Other marketplace' }).platform;
-    const oi = findCol(H, MK_ORDER), ai = findCol(H, ['Total settlement amount', 'Settlement amount', 'Order total', 'Total', 'Order value', 'Amount', 'item-price', 'Gross', 'Price']), di = findCol(H, ['Order date', 'Created time', 'purchase-date', 'Date', 'Sale date', 'Order created time', 'posted-date']), fi = findCol(H, ['Commission', 'Fees', 'Total fees', 'Platform commission', 'Referral fee']), ki = findCol(H, ['SKU', 'Seller SKU', 'sku']), qi = findCol(H, ['Quantity', 'Qty', 'quantity-purchased']);
-    const C = n => findCol(H, n), ti = C(['type', 'Transaction type', 'Type']), sales = [C(['product sales', 'Product sales', 'Total revenue', 'Subtotal after seller discounts', 'Item price', 'item-price', 'Sale price', 'Gross sales', 'Product price'])].filter(i => i > -1), post = [C(['postage credits', 'shipping credits', 'Shipping fee paid by buyer', 'Shipping price', 'shipping-price'])].filter(i => i > -1 && !sales.includes(i)), feeC = ['selling fees', 'fba fees', 'other transaction fees', 'Total fees', 'Transaction fee', 'TikTok Shop commission fee', 'Commission', 'Referral fee', 'Platform commission', 'Affiliate commission', 'Fees'].map(n => C([n])).filter((i, k, a) => i > -1 && a.indexOf(i) === k && i !== ai && !sales.includes(i)), totC = C(['total', 'Total settlement amount', 'Settlement amount', 'Net', 'Net amount', 'Payout amount']), taxC = [C(['product sales tax', 'marketplace withheld tax', 'VAT'])].filter(i => i > -1);
+    const oi = mkOi(H), ai = findCol(H, ['Total settlement amount', 'Settlement amount', 'Order total', 'Total', 'Order value', 'Amount', 'item-price', 'Gross', 'Price']), di = findCol(H, ['Order date', 'Created time', 'purchase-date', 'Date', 'Sale date', 'Order created time', 'posted-date']), fi = findCol(H, ['Commission', 'Fees', 'Total fees', 'Platform commission', 'Referral fee']), ki = findCol(H, ['SKU', 'Seller SKU', 'sku']), qi = findCol(H, ['Quantity', 'Qty', 'quantity-purchased']);
+    const C = n => findCol(H, n), ti = C(['type', 'Transaction type', 'Type']), sales = [C(['product sales', 'Product sales', 'Total revenue', 'Sales Amount', 'Subtotal after seller discounts', 'Item price', 'item-price', 'Sale price', 'Gross sales', 'Product price'])].filter(i => i > -1), post = [C(['postage credits', 'shipping credits', 'Shipping fee paid by buyer', 'Shipping price', 'shipping-price'])].filter(i => i > -1 && !sales.includes(i)), feeC = ['selling fees', 'fba fees', 'other transaction fees', 'Total fees', 'Transaction fee', 'TikTok Shop commission fee', 'Commission', 'Referral fee', 'Platform commission', 'Affiliate commission', 'Fees', 'Fee', 'Fees & Taxes'].map(n => C([n])).filter((i, k, a) => i > -1 && a.indexOf(i) === k && i !== ai && !sales.includes(i)), totC = C(['total', 'Total settlement amount', 'Settlement amount', 'Net', 'Net amount', 'Payout amount']), taxC = [C(['product sales tax', 'marketplace withheld tax', 'VAT'])].filter(i => i > -1);
     const feeList = feeC.filter(i => !['Total fees', 'Fees'].includes(H[i]) || feeC.length === 1);
+    const rfC = C(['Refund Amount', 'Refunded amount', 'Refund']), dataRows = rows.slice(hi + 1);
+    // fee columns that only hold positive numbers are charges: make them negative
+    const flip = {}; feeList.forEach(i => { flip[i] = dataRows.some(r => P((r || [])[i]) < 0) ? 1 : -1; });
     const out = [];
-    for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const id = String(row[oi] || '').trim(); const type = ti > -1 ? String(row[ti] || '').trim() : ''; if (!id && !/transfer|payout|withdraw|service fee|subscription|adjust/i.test(type)) continue;
-      const s = sales.reduce((a, i) => a + P(row[i]), 0) + post.reduce((a, i) => a + P(row[i]), 0), f = feeList.reduce((a, i) => a + P(row[i]), 0), tot = totC > -1 ? P(row[totC]) : null;
-      out.push({ order: id, type, sales: s, fees: f, tax: taxC.reduce((a, i) => a + P(row[i]), 0), total: tot, amount: P(row[ai]), fee: fi > -1 ? P(row[fi]) : f, date: parseDate(row[di]), sku: ki > -1 ? String(row[ki]) : '', qty: qi > -1 ? num(row[qi]) : null }); }
+    for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const id = String(row[oi] || '').trim(); const type = ti > -1 ? String(row[ti] || '').trim() : ''; if (!id && !/transfer|payout|deposit|withdraw|service fee|subscription|adjust|fee/i.test(type) && !(totC > -1 && P(row[totC]))) continue;
+      const s = sales.reduce((a, i) => a + P(row[i]), 0) + post.reduce((a, i) => a + P(row[i]), 0), f = feeList.reduce((a, i) => a + (flip[i] < 0 ? -Math.abs(P(row[i])) : P(row[i])), 0), tot = totC > -1 ? P(row[totC]) : null, rf = rfC > -1 ? -Math.abs(P(row[rfC])) : 0;
+      out.push({ order: id, type, refund: rf, sales: s, fees: f, tax: taxC.reduce((a, i) => a + P(row[i]), 0), total: tot, amount: P(row[ai]), fee: fi > -1 ? P(row[fi]) : f, date: parseDate(row[di]), sku: ki > -1 ? String(row[ki]) : '', qty: qi > -1 ? num(row[qi]) : null }); }
     return { platform, rows: out, count: out.length, month: majorityMonth(out.map(x => x.date)), aside: [], unusedCols: [] };
   }
 });
@@ -816,12 +821,12 @@ AD.auditMarket = function (rows, ctx) {
   const by = new Map(); let payouts = 0, other = 0, otherN = 0; const costs = (ctx && ctx.costs) || { byOrder: new Map(), bySku: new Map() };
   rows.forEach(r => {
     const t = String(r.type || '').toLowerCase(); const net = r.total != null ? r.total : (r.sales || r.fees ? (r.sales || 0) + (r.fees || 0) : (r.amount || 0) - Math.abs(r.fee || 0));
-    if (/transfer|payout|withdraw|disburse/.test(t)) { payouts += -net; return; }
+    if (/transfer|payout|deposit|withdraw|disburse/.test(t)) { payouts += -net; return; }
     if (!r.order) { other += net; otherN++; return; }
     const o = by.get(r.order) || { order: r.order, date: r.date, sku: '', title: r.desc || '', qty: 0, gross: 0, fees: 0, refund: 0, net: 0, types: new Set() };
-    const s = r.sales || (r.total == null && !r.sales ? r.amount || 0 : 0);
+    const s = r.sales || (!r.sales && !/fee/.test(t) ? r.amount || 0 : 0);
     if (/refund|return|chargeback|a-to-z|claim/.test(t) || s < 0) o.refund += s; else { o.gross += s; o.qty += r.qty || 0; if (!o.sku && r.sku) o.sku = r.sku; if (!o.date) o.date = r.date; }
-    o.fees += r.fees || (r.total == null ? -Math.abs(r.fee || 0) : 0); o.net += net; if (r.type) o.types.add(r.type); by.set(r.order, o);
+    if (r.refund) o.refund += r.refund; o.fees += r.fees || (r.total == null ? -Math.abs(r.fee || 0) : 0); o.net += net; if (r.type) o.types.add(r.type); by.set(r.order, o);
   });
   let cogs = 0, known = 0, missing = 0;
   const OL = [...by.values()].map(o => {
@@ -935,7 +940,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.1.0';
+const APPV = '2.1.1';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
