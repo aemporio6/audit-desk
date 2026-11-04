@@ -264,7 +264,7 @@ function parseDate(v, dmy = true) {
   if (typeof v === 'number' && v > 20000 && v < 80000) { const d = new Date(Math.round((v - 25569) * 864e5)); return iso(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); }
   const s = String(v).trim();
   let m;
-  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return iso(+m[1], +m[2] - 1, +m[3]);
+  if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return iso(+m[1], +m[2] - 1, +m[3]);
   if ((m = s.match(/^(\d{1,2})[\s\-\/.]([A-Za-z]{3,9})[\s\-\/.,]+(\d{2,4})/))) { const mo = MON[m[2].toLowerCase().slice(0, 4)] ?? MON[m[2].toLowerCase().slice(0, 3)]; if (mo !== undefined) return iso(yr(m[3]), mo, +m[1]); }
   if ((m = s.match(/^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{2,4})/))) { const mo = MON[m[1].toLowerCase().slice(0, 4)] ?? MON[m[1].toLowerCase().slice(0, 3)]; if (mo !== undefined) return iso(yr(m[3]), mo, +m[2]); }
   if ((m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/))) {
@@ -498,13 +498,15 @@ R.push({
 R.push({
   kind: 'stock_cost', label: 'Stock cost list (cost per SKU)', platform: 'Any',
   detect(sh) {
-    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, ['SKU', 'Custom label', 'Seller SKU']) > -1 && findCol(H, ['Total', 'Total cost', 'Unit cost', 'Cost price', 'Landed cost', 'Cost']) > -1 && findCol(H, VA.order) < 0; }, 20);
+    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, ['SKU', 'Custom label', 'Seller SKU']) > -1 && findCol(H, ['Total', 'Total cost', 'Unit cost', 'Cost price', 'Landed cost', 'Cost']) > -1 && findCol(H, VA.order) < 0 && findCol(H, MK_ORDER) < 0; }, 20);
     return hi > -1 ? 0.8 : 0;
   },
   parse(sh) {
     const rows = sh.rows, hi = headerRow(rows, r => { const H = r.map(String); return findCol(H, ['SKU', 'Custom label', 'Seller SKU']) > -1 && findCol(H, ['Total', 'Total cost', 'Unit cost', 'Cost price', 'Landed cost', 'Cost']) > -1; }, 20);
     const H = rows[hi].map(String);
-    const si = findCol(H, ['SKU', 'Custom label', 'Seller SKU']), ci = findCol(H, ['Total', 'Total cost', 'Landed cost', 'Unit cost', 'Cost price', 'Cost']), qi = findCol(H, ['Qty', 'Quantity', 'Stock', 'Units']), ti = findCol(H, ['Title', 'Product', 'Name', 'Item title']), ai = findCol(H, ['ASIN']);
+    const si = findCol(H, ['SKU', 'Custom label', 'Seller SKU']); let ci = findCol(H, ['Total', 'Total cost', 'Landed cost', 'Tool Price', 'Unit cost', 'Cost price', 'Unit price', 'Cost', 'Price']); const ui = findCol(H, ['Unit cost', 'Unit price', 'Cost per unit', 'Price per unit']); const qi0 = findCol(H, ['Qty', 'Quantity', 'Stock', 'Units']);
+    if (ui > -1 && qi0 > -1 && ui !== ci) { let n = 0, line = 0; for (let r = hi + 1; r < Math.min(rows.length, hi + 300); r++) { const q = num((rows[r] || [])[qi0]), u = num((rows[r] || [])[ui]), t = num((rows[r] || [])[ci]); if (q > 1 && u > 0 && t > 0) { n++; if (Math.abs(t - q * u) <= Math.max(0.05, t * 0.02)) line++; } } if (n >= 3 && line / n > 0.6) ci = ui; }
+    const  qi = qi0, ti = findCol(H, ['Title', 'Product', 'Name', 'Item title']), ai = findCol(H, ['ASIN']);
     const out = [], aside = [];
     for (let r = hi + 1; r < rows.length; r++) {
       const row = rows[r] || []; const sku = String(row[si] || '').trim(); const c = num(row[ci]);
@@ -590,6 +592,23 @@ R.push({
   }
 });
 
+// Stock count (stock take): SKU + counted quantity, no cost column
+R.push({
+  kind: 'stock_count', label: 'Stock count (what is on the shelf)', platform: 'Any',
+  detect(sh, name) {
+    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, ['SKU', 'Custom label', 'Seller SKU']) > -1 && findCol(H, ['Counted', 'Count', 'Stock count', 'On hand', 'In stock', 'Qty', 'Quantity', 'Stock']) > -1 && findCol(H, ['Total', 'Total cost', 'Unit cost', 'Cost price', 'Landed cost', 'Cost', 'Price', 'Unit price', 'Order number', 'Order ID', 'Sales record number']) < 0; }, 15);
+    if (hi < 0) return 0; return /count|stock ?take|inventory|shelf|warehouse/i.test(name + ' ' + sh.name) ? 0.85 : 0.6;
+  },
+  parse(sh) {
+    const rows = sh.rows, hi = headerRow(rows, r => { const H = r.map(String); return findCol(H, ['SKU', 'Custom label', 'Seller SKU']) > -1 && findCol(H, ['Counted', 'Count', 'Stock count', 'On hand', 'In stock', 'Qty', 'Quantity', 'Stock']) > -1; }, 15), H = rows[hi].map(String);
+    const si = findCol(H, ['SKU', 'Custom label', 'Seller SKU']), qi = findCol(H, ['Counted', 'Count', 'Stock count', 'On hand', 'In stock', 'Qty', 'Quantity', 'Stock']), di = findCol(H, ['Date', 'Counted on', 'Count date']);
+    const out = [], aside = []; let date = null;
+    for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const sku = String(row[si] || '').trim(); if (!sku) continue; const q = num(row[qi]); if (q === null) { aside.push({ row: r + 1, reason: 'SKU without a counted quantity', values: row.slice(0, 6) }); continue; } if (di > -1 && !date) date = parseDate(row[di]); out.push({ sku, qty: q, row: r + 1 }); }
+    return { rows: out, count: out.length, date, aside, unusedCols: [] };
+  }
+});
+
+const MK_ORDER = ['Order/adjustment ID', 'Order ID', 'order id', 'Order Number', 'amazon-order-id', 'order-id', 'Order No', 'Related order ID'];
 // Other marketplaces: basic sales file (OnBuy, TikTok Shop, Amazon, Temu, Shopify…) — order id + date + amount
 const MK = [
   { platform: 'OnBuy', test: h => h.includes('onbuy') || (h.includes('orderid') && h.includes('commission') && h.includes('sitename')) },
@@ -602,16 +621,20 @@ const MK = [
 R.push({
   kind: 'market_sales', label: 'Marketplace sales / settlement file', platform: 'Other',
   detect(sh, name) {
-    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, ['Order ID', 'Order Number', 'amazon-order-id', 'order-id', 'Order No']) > -1 && findCol(H, ['Total', 'Amount', 'Order total', 'Settlement amount', 'Total settlement amount', 'Order value', 'item-price', 'Gross', 'Price']) > -1; }, 15);
+    const hi = headerRow(sh.rows, r => { const H = r.map(String); return findCol(H, MK_ORDER) > -1 && findCol(H, ['Total', 'Amount', 'Order total', 'Settlement amount', 'Total settlement amount', 'Order value', 'item-price', 'Gross', 'Price']) > -1; }, 15);
     if (hi < 0) return 0; const h = sh.rows[hi].map(norm).join('|') + norm(name);
     return MK.some(m => m.test(h)) ? 0.85 : 0.5;
   },
   parse(sh, name) {
-    const rows = sh.rows, hi = headerRow(rows, r => findCol(r.map(String), ['Order ID', 'Order Number', 'amazon-order-id', 'order-id', 'Order No']) > -1, 15), H = rows[hi].map(String);
+    const rows = sh.rows, hi = headerRow(rows, r => findCol(r.map(String), MK_ORDER) > -1, 15), H = rows[hi].map(String);
     const h = H.map(norm).join('|') + norm(name); const platform = (MK.find(m => m.test(h)) || { platform: 'Other marketplace' }).platform;
-    const oi = findCol(H, ['Order ID', 'Order Number', 'amazon-order-id', 'order-id', 'Order No']), ai = findCol(H, ['Total settlement amount', 'Settlement amount', 'Order total', 'Total', 'Order value', 'Amount', 'item-price', 'Gross', 'Price']), di = findCol(H, ['Order date', 'Created time', 'purchase-date', 'Date', 'Sale date', 'Order created time', 'posted-date']), fi = findCol(H, ['Commission', 'Fees', 'Total fees', 'Platform commission', 'Referral fee']), ki = findCol(H, ['SKU', 'Seller SKU', 'sku']), qi = findCol(H, ['Quantity', 'Qty', 'quantity-purchased']);
+    const oi = findCol(H, MK_ORDER), ai = findCol(H, ['Total settlement amount', 'Settlement amount', 'Order total', 'Total', 'Order value', 'Amount', 'item-price', 'Gross', 'Price']), di = findCol(H, ['Order date', 'Created time', 'purchase-date', 'Date', 'Sale date', 'Order created time', 'posted-date']), fi = findCol(H, ['Commission', 'Fees', 'Total fees', 'Platform commission', 'Referral fee']), ki = findCol(H, ['SKU', 'Seller SKU', 'sku']), qi = findCol(H, ['Quantity', 'Qty', 'quantity-purchased']);
+    const C = n => findCol(H, n), ti = C(['type', 'Transaction type', 'Type']), sales = [C(['product sales', 'Product sales', 'Total revenue', 'Subtotal after seller discounts', 'Item price', 'item-price', 'Sale price', 'Gross sales', 'Product price'])].filter(i => i > -1), post = [C(['postage credits', 'shipping credits', 'Shipping fee paid by buyer', 'Shipping price', 'shipping-price'])].filter(i => i > -1 && !sales.includes(i)), feeC = ['selling fees', 'fba fees', 'other transaction fees', 'Total fees', 'Transaction fee', 'TikTok Shop commission fee', 'Commission', 'Referral fee', 'Platform commission', 'Affiliate commission', 'Fees'].map(n => C([n])).filter((i, k, a) => i > -1 && a.indexOf(i) === k && i !== ai && !sales.includes(i)), totC = C(['total', 'Total settlement amount', 'Settlement amount', 'Net', 'Net amount', 'Payout amount']), taxC = [C(['product sales tax', 'marketplace withheld tax', 'VAT'])].filter(i => i > -1);
+    const feeList = feeC.filter(i => !['Total fees', 'Fees'].includes(H[i]) || feeC.length === 1);
     const out = [];
-    for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const id = String(row[oi] || '').trim(); if (!id) continue; out.push({ order: id, amount: P(row[ai]), fee: fi > -1 ? P(row[fi]) : 0, date: parseDate(row[di]), sku: ki > -1 ? String(row[ki]) : '', qty: qi > -1 ? num(row[qi]) : null }); }
+    for (let r = hi + 1; r < rows.length; r++) { const row = rows[r] || []; const id = String(row[oi] || '').trim(); const type = ti > -1 ? String(row[ti] || '').trim() : ''; if (!id && !/transfer|payout|withdraw|service fee|subscription|adjust/i.test(type)) continue;
+      const s = sales.reduce((a, i) => a + P(row[i]), 0) + post.reduce((a, i) => a + P(row[i]), 0), f = feeList.reduce((a, i) => a + P(row[i]), 0), tot = totC > -1 ? P(row[totC]) : null;
+      out.push({ order: id, type, sales: s, fees: f, tax: taxC.reduce((a, i) => a + P(row[i]), 0), total: tot, amount: P(row[ai]), fee: fi > -1 ? P(row[fi]) : f, date: parseDate(row[di]), sku: ki > -1 ? String(row[ki]) : '', qty: qi > -1 ? num(row[qi]) : null }); }
     return { platform, rows: out, count: out.length, month: majorityMonth(out.map(x => x.date)), aside: [], unusedCols: [] };
   }
 });
@@ -769,11 +792,11 @@ AD.auditEbay = function (txn, orders, ctx) {
     const pm = payouts.map(p => { const amt = -p.net; const i = rowsAll.findIndex((r, k) => !used.has(k) && Math.abs(r.amount - amt) <= 1 && within(r.date, p.date, -1, 6)); if (i > -1) used.add(i); return { id: p.payId, date: p.date, amount: amt, found: i > -1 ? rowsAll[i] : null }; });
     payMatch = { list: pm, found: pm.filter(x => x.found).length, total: pm.length };
     const aeRows = rowsAll.map((r, k) => ({ r, k })).filter(x => x.r.amount < 0 && /ali\s*express|alipay|aliexpress|alibaba/i.test(x.r.desc));
-    let hit = 0, tried = 0;
-    OL.forEach(o => { if (o.costSrc !== 'VA sheet' || !o.cost) return; tried++; const j = aeRows.find(x => !used.has(x.k) && Math.abs(-x.r.amount - o.cost) <= Math.max(3, Math.round(o.cost * 0.03)) && within(x.r.date, o.date, -3, 7)); if (j) { used.add(j.k); hit++; o.costProof = j.r.src + ' ' + j.r.date; } else o.flags.push('Cost not found on card / bank statement'); });
+    let hit = 0, tried = 0, fxDiff = 0;
+    OL.forEach(o => { if (o.costSrc !== 'VA sheet' || !o.cost) return; tried++; const j = aeRows.find(x => !used.has(x.k) && Math.abs(-x.r.amount - o.cost) <= Math.max(3, Math.round(o.cost * 0.03)) && within(x.r.date, o.date, -3, 7)); if (j) { used.add(j.k); hit++; o.costProof = j.r.src + ' ' + j.r.date; o.cardPaid = -j.r.amount; fxDiff += -j.r.amount - o.cost; } else o.flags.push('Cost not found on card / bank statement'); });
     const aeRefunds = rowsAll.filter(r => r.amount > 0 && /ali\s*express|alipay/i.test(r.desc));
     const inM = aeRefunds.filter(r => r.date && txn.month && r.date.slice(0, 7) === txn.month);
-    aeMatch = { tried, hit, refunds: aeRefunds.reduce((a, r) => a + r.amount, 0), nRefunds: aeRefunds.length, refundsInMonth: inM.reduce((a, r) => a + r.amount, 0), nRefundsInMonth: inM.length };
+    aeMatch = { tried, hit, fxDiff, refunds: aeRefunds.reduce((a, r) => a + r.amount, 0), nRefunds: aeRefunds.length, refundsInMonth: inM.reduce((a, r) => a + r.amount, 0), nRefundsInMonth: inM.length };
   }
   const supplierRefunds = aeMatch && ctx.useSupplierRefunds !== false ? aeMatch.refundsInMonth || 0 : 0;
   const profit = S.net - cogs + supplierRefunds;
@@ -788,6 +811,29 @@ function addDays(d, n) { if (!d) return null; const t = new Date(Date.parse(d) +
 function within(d, ref, lo, hi) { if (!d || !ref) return false; const a = Date.parse(d), b = Date.parse(ref); const k = (a - b) / 864e5; return k >= lo && k <= hi; }
 
 // Build cost maps from VA rows + stock rows (priority rules from the plan)
+// Other marketplaces (Amazon, TikTok Shop, OnBuy, Temu, Etsy, Shopify): settlement lines → orders, fees, refunds, payouts, cost, profit
+AD.auditMarket = function (rows, ctx) {
+  const by = new Map(); let payouts = 0, other = 0, otherN = 0; const costs = (ctx && ctx.costs) || { byOrder: new Map(), bySku: new Map() };
+  rows.forEach(r => {
+    const t = String(r.type || '').toLowerCase(); const net = r.total != null ? r.total : (r.sales || r.fees ? (r.sales || 0) + (r.fees || 0) : (r.amount || 0) - Math.abs(r.fee || 0));
+    if (/transfer|payout|withdraw|disburse/.test(t)) { payouts += -net; return; }
+    if (!r.order) { other += net; otherN++; return; }
+    const o = by.get(r.order) || { order: r.order, date: r.date, sku: '', title: r.desc || '', qty: 0, gross: 0, fees: 0, refund: 0, net: 0, types: new Set() };
+    const s = r.sales || (r.total == null && !r.sales ? r.amount || 0 : 0);
+    if (/refund|return|chargeback|a-to-z|claim/.test(t) || s < 0) o.refund += s; else { o.gross += s; o.qty += r.qty || 0; if (!o.sku && r.sku) o.sku = r.sku; if (!o.date) o.date = r.date; }
+    o.fees += r.fees || (r.total == null ? -Math.abs(r.fee || 0) : 0); o.net += net; if (r.type) o.types.add(r.type); by.set(r.order, o);
+  });
+  let cogs = 0, known = 0, missing = 0;
+  const OL = [...by.values()].map(o => {
+    const sold = o.gross > 0; let cost = null, src = '';
+    if (sold) { const va = costs.byOrder.get(o.order); const sk = o.sku && costs.bySku.get(o.sku); if (va && va.cost) { cost = va.cost; src = 'VA sheet'; } else if (sk && sk.cost) { cost = sk.cost * Math.max(1, o.qty || 1); src = 'Stock cost list'; } }
+    if (sold) { if (cost != null) { cogs += cost; known++; } else missing++; }
+    const back = -o.refund; let rtype = ''; if (back > 0) rtype = !sold ? 'Refund of an earlier month’s order' : back >= o.gross - 1 ? 'Full refund' : `Part refund · ${Math.round(1000 * back / o.gross) / 10}%`;
+    return { order: o.order, date: o.date, title: o.title, sku: o.sku, qty: o.qty, gross: o.gross, fees: o.fees, ads: 0, net: o.net, cost, costSrc: src, profit: o.net - (cost || 0), flags: sold && cost == null ? ['No cost found'] : [], rtype, back, refunded: sold && back >= o.gross - 1, types: [...o.types].join(', ') };
+  });
+  const sum = k => OL.reduce((a, o) => a + (o[k] || 0), 0); const net = sum('net') + other;
+  return { kind: 'market', orders: OL, sums: { gross: sum('gross'), refunds: sum('back'), fees: sum('fees'), net, other, otherN, payouts, orders: OL.filter(o => o.gross > 0).length, units: sum('qty') }, cogs, costKnown: known, nCostMissing: missing, profit: net - cogs, cash: { diff: 0, held: 0, heldOrders: {} }, health: {}, netFail: 0, plCheck: 0, orMatch: null, sites: {}, unknownTypes: {} };
+};
 AD.buildCosts = function (vaRows, stockRows) {
   const byOrder = new Map();
   (vaRows || []).forEach(r => {
@@ -869,10 +915,10 @@ AD.stock = function (stockIn, salesBySkuMonth) { // stockIn [{sku,qty,cost(p),da
   skus.forEach(sku => {
     const lots = stockIn.filter(s => s.sku === sku).sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(s => ({ qty: s.qty, cost: s.cost }));
     const inQty = lots.reduce((a, l) => a + l.qty, 0);
-    const sold = salesBySkuMonth[sku] || {}; let soldQty = 0, cogs = 0;
-    Object.keys(sold).sort().forEach(m => { let q = sold[m]; soldQty += q; while (q > 0 && lots.length) { const l = lots[0]; const t = Math.min(q, l.qty); cogs += t * l.cost; l.qty -= t; q -= t; if (!l.qty) lots.shift(); } });
+    const sold = salesBySkuMonth[sku] || {}; let soldQty = 0, cogs = 0; const months = {};
+    Object.keys(sold).sort().forEach(m => { let q = sold[m], c0 = cogs, q0 = q; soldQty += q; while (q > 0 && lots.length) { const l = lots[0]; const t = Math.min(q, l.qty); cogs += t * l.cost; l.qty -= t; q -= t; if (!l.qty) lots.shift(); } months[m] = { qty: q0 - q, cogs: cogs - c0 }; });
     const left = lots.reduce((a, l) => a + l.qty, 0), value = lots.reduce((a, l) => a + l.qty * l.cost, 0);
-    res[sku] = { sku, inQty, soldQty, left: inQty - soldQty, value, cogs, negative: inQty - soldQty < 0 };
+    res[sku] = { sku, inQty, soldQty, left: inQty - soldQty, value, cogs, months, negative: inQty - soldQty < 0 };
   });
   return res;
 };
@@ -889,7 +935,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.0.2';
+const APPV = '2.1.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$' };
@@ -957,7 +1003,7 @@ const DEFAULT_ACC = [
   { id: 'vcom', name: 'VCOM', seller: 'rumi-bazar-eu', aliases: ['BAY-101A', 'VCOM'], Team: 'Team Junaid', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Own stock', va: 'Junaid (VA)', vat: 'Not VAT registered', cf: {} },
   { id: 'com365', name: 'Com365', seller: '', aliases: ['BAY-106', 'Com365'], Team: 'Team Ahsan', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Dropship', va: 'Ahsan (VA)', vat: 'Not VAT registered', cf: {} }
 ];
-const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [], offRefunds: {} };
+const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [], offRefunds: {}, returns: {}, people: {} };
 const KEYS = Object.keys(K);
 async function loadAll() {
   persisted.ok = await DB.open();
@@ -1232,12 +1278,11 @@ function getAudit(acctId, month) {
     const ord = ordMerged(acctId, month);
     const market = activeParts('market_sales').filter(p => p.acct === acctId && p.month === month);
     if (txn) {
-      const A = AD.auditEbay(txn, ord || null, { costs: costsFor(acctId), statements: stmtsFor(txn, month), dropship: a && a.type !== 'Own stock', ae: activeParts('ae_orders').flatMap(p => p.rows.map(r => Object.assign({}, r))) });
+      const A = AD.auditEbay(txn, ord || null, { costs: costsFor(acctId, month), statements: stmtsFor(txn, month), dropship: a && a.type !== 'Own stock', ae: activeParts('ae_orders').flatMap(p => p.rows.map(r => Object.assign({}, r))) });
       A.txnFile = txn._file.name; A.ordFile = ord ? ord._file.name : null; A.kind = 'ebay'; A.nTxnFiles = txn.nFiles || 1; A.nOrdFiles = ord ? ord.nFiles || 1 : 0;
       res = A;
     } else if (market.length) {
-      const rows = market.flatMap(p => p.rows); const sales = rows.reduce((s, r) => s + r.amount, 0), fees = rows.reduce((s, r) => s + r.fee, 0);
-      res = { kind: 'market', platform: market[0].platform, month, rows, sums: { gross: sales, net: sales - Math.abs(fees), orders: new Set(rows.map(r => r.order)).size }, orders: [], cogs: 0, profit: sales - Math.abs(fees), cash: { diff: 0, held: 0, heldOrders: {} }, health: {}, netFail: 0, plCheck: 0, orMatch: null, sites: {}, unknownTypes: {} };
+      const rows = market.flatMap(p => p.rows); res = AD.auditMarket(rows, { costs: costsFor(acctId, month) }); res.platform = market[0].platform; res.month = month; res.rows = rows; res.files = market.map(p => p._file.name);
     }
   } catch (e) { logErr(e, 'audit ' + key); res = { error: e.message }; }
   CACHE.set(key, res); return res;
@@ -1612,7 +1657,7 @@ V.audit = () => {
 };
 const T = {};
 T.summary = (a, m, A) => {
-  if (A.kind === 'market') return `<div class="grid"><div class="card tile"><div class="k">Sales</div><div class="v">${fmt(A.sums.gross)}</div></div><div class="card tile"><div class="k">Orders</div><div class="v">${A.sums.orders}</div></div><div class="card tile hi"><div class="k">Net after fees</div><div class="v">${fmt(A.sums.net)}</div></div></div><div class="card note">Basic audit for ${esc(A.platform)}: sales and fees from the file. Add a cost source to see profit.</div>`;
+  if (A.kind === 'market') return `<div class="grid"><div class="card tile"><div class="k">Sales</div><div class="v">${fmt(A.sums.gross)}</div><div class="note">${A.sums.orders} orders · ${A.sums.units} units</div></div><div class="card tile"><div class="k">Refunds</div><div class="v">${fmt(A.sums.refunds)}</div></div><div class="card tile"><div class="k">${esc(A.platform)} fees</div><div class="v">${fmt(-A.sums.fees)}</div></div><div class="card tile"><div class="k">Net from ${esc(A.platform)}</div><div class="v">${fmt(A.sums.net)}</div>${A.sums.otherN ? `<div class="note">incl. ${A.sums.otherN} account lines ${fmt(A.sums.other)}</div>` : ''}</div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div>${A.nCostMissing ? `<div class="note">${A.nCostMissing} orders without cost</div>` : ''}</div><div class="card tile hi"><div class="k">Profit</div><div class="v">${fmt(A.profit)}</div></div><div class="card tile"><div class="k">Paid out to the bank</div><div class="v">${fmt(A.sums.payouts)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m], m)}</div><div class="card note">${esc(A.platform)} settlement: every line of ${esc((A.files || []).join(', '))} is used. Cost comes from the VA sheet (by order ID) or the stock cost list (by SKU). Open the Orders tab for every order.</div>`;
   const z = k => A.sums[k] || 0;
   const checks = [[A.netFail === 0, `eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}`], [Math.abs(A.cash.diff) <= 1, `Cash balances: difference ${fmt(A.cash.diff)}`], [Math.abs(A.plCheck) <= 50, `Profit & loss ties to eBay net${A.plCheck ? ` (${fmt(A.plCheck)} currency rounding)` : ''}`], [!A.orMatch || A.orMatch.pct === 100, A.orMatch ? `Orders report matches ${A.orMatch.pct}% (${A.orMatch.inOr} orders)` : 'Orders report not uploaded yet'], [!A.nCostMissing, A.nCostMissing ? `${A.nCostMissing} orders have no cost yet` : `Cost found for all ${A.costKnown} orders`]];
   if (A.payMatch) checks.push([A.payMatch.found === A.payMatch.total, `Payouts found in bank: ${A.payMatch.found} of ${A.payMatch.total}`]);
@@ -2231,7 +2276,7 @@ const GDRIVE = {
 // data the same on every device: one file "Audit Desk data.json" in the signed-in Drive
 const GWDB = (() => {
   const subs = {}; const last = {}; let fileId = null, timer = null, busy = Promise.resolve();
-  async function find() { if (fileId) return fileId; const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id,modifiedTime)'); u.searchParams.set('orderBy', 'modifiedTime desc'); const j = await (await gwFetch(u)).json(); if (j.files && j.files[0]) return (fileId = j.files[0].id); const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: 'Audit Desk data.json', mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob(['{}'], { type: 'application/json' })); const c = await (await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd })).json(); return (fileId = c.id); }
+  async function find() { if (fileId) return fileId; try { const s = new URL(DAPI); s.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and sharedWithMe = true"); s.searchParams.set('fields', 'files(id,owners(emailAddress))'); const js = await (await gwFetch(s)).json(); if (js.files && js.files[0]) return (fileId = js.files[0].id); } catch (e) { } const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id,modifiedTime)'); u.searchParams.set('orderBy', 'modifiedTime desc'); const j = await (await gwFetch(u)).json(); if (j.files && j.files[0]) return (fileId = j.files[0].id); const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: 'Audit Desk data.json', mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob(['{}'], { type: 'application/json' })); const c = await (await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd })).json(); return (fileId = c.id); }
   async function readAll() { const id = await find(); const t = await (await gwFetch(`${DAPI}/${id}?alt=media`)).text(); try { return JSON.parse(t || '{}'); } catch (e) { return {}; } }
   async function poll() { if (!gwOk()) return; try { const all = await readAll(); Object.keys(subs).forEach(path => { const k = path.split('/')[1], v = all[k], s = JSON.stringify(v || null); if (last[path] === s) return; last[path] = s; subs[path].forEach(f => f({ exists: !!v, data: () => v, fromCache: false, hasPendingWrites: false })); }); } catch (e) { if (e.code !== 'needs_reauth') logErr(e, 'drive data'); } }
   return {
@@ -3402,6 +3447,187 @@ ACT.word = () => {
   <p style="color:#5b6877;font-size:9pt;margin-top:24pt">${esc(stamp())}</p></body></html>`;
   saveFile(`${a.name} ${m} Audit.doc`, new Blob(['﻿' + html], { type: 'application/msword' }));
 };
+
+/* Audit Desk v3 — FIFO stock cost and returns, stock count, VAT, AliExpress rate difference, silent Google reconnect,
+   team members with their own Google sign-in, daily Drive backups with restore, WhatsApp / e-mail reminders. */
+'use strict';
+
+// ====================== FIFO stock cost (own stock) and returns ======================
+let FIFO = null; const _inv0 = invalidate;
+invalidate = function () { FIFO = null; return _inv0.apply(this, arguments); };
+function fifo() { if (!FIFO) { try { FIFO = stockReport(); } catch (e) { FIFO = {}; } } return FIFO; }
+const _costsFor = costsFor;
+costsFor = function (acctId, month) {
+  const C = _costsFor(acctId);
+  if (!month || !K.stockIn.some(s => s.cost)) return C;
+  const R = fifo(); // the cost of the units that left the shelf this month, oldest stock first
+  Object.values(R).forEach(r => { const mm = r.months && r.months[month]; if (!mm || !mm.qty || !K.stockIn.some(s => s.sku === r.sku && s.cost)) return; const unit = Math.round(mm.cogs / mm.qty); if (unit > 0) C.bySku.set(r.sku, { sku: r.sku, cost: unit, tab: 'confirmed stock in · FIFO' }); });
+  return C;
+};
+// a refunded own-stock item that came back goes on the shelf again and its cost leaves the month
+const retKey = (a, m, o) => `${a}|${m}|${o}`;
+const _ga3 = getAudit;
+getAudit = function (acctId, month) {
+  const A = _ga3(acctId, month);
+  if (A && A.orders && !A._v3) {
+    A._v3 = true; let back = 0; const a = acctById(acctId);
+    A.orders.forEach(o => { const r = (K.returns || {})[retKey(acctId, month, o.order)]; if (!r) return; o.retDecided = true; if (r.back && o.cost) { back += o.cost; o.profit = (o.profit || 0) + o.cost; o.returned = true; o.rtype = (o.rtype || 'Refund') + ' · item back in stock'; } });
+    if (back) { A.cogs -= back; A.profit += back; A.returnedCost = back; }
+    // VAT that belongs to HMRC comes off the profit of a VAT-registered account (Accounts → Edit)
+    const v = a && vatFor(a, A); if (v && v.due && a.vatOff !== false) { A.vatDue = v.due; A.profit -= v.due; }
+  }
+  return A;
+};
+const ownAcct = a => a && /own|mixed/i.test(a.type || '');
+function undecidedReturns() { const L = []; allAudits().forEach(({ a, m, A }) => { if (!ownAcct(a)) return; (A.orders || []).forEach(o => { if (o.refunded && o.cost && !o.retDecided && !/claim|dispute/i.test(o.rtype || '')) L.push({ a, m, o }); }); }); return L; }
+Object.assign(ACT, {
+  retSet: async el => { K.returns = K.returns || {}; K.returns[el.dataset.k] = { back: el.dataset.v === '1', by: K.prefs.owner, at: new Date().toISOString() }; const [a, m, o] = el.dataset.k.split('|'); const A0 = getAudit(a, m), O = A0 && A0.orders.find(x => x.order === o); if (el.dataset.v === '1' && O && O.sku) { const sku = String(O.sku).split(', ')[0]; if (sku && isOwnSku(sku, a)) K.stockIn.push({ id: 'r' + Date.now().toString(36), sku, qty: Math.max(1, O.qty || 1), cost: Math.round(O.cost / Math.max(1, O.qty || 1)), date: O.refundDate || today(), note: 'Returned by buyer · order ' + o }); } await save('returns', 'stockIn'); invalidate(); toast(el.dataset.v === '1' ? 'Back in stock. Its cost no longer counts this month.' : 'Saved: the item did not come back.'); render(); }
+});
+// buttons on the refunds list for own-stock accounts
+const _refundTable = refundTable;
+refundTable = function (R, showAcct) {
+  let h = _refundTable(R, showAcct);
+  R.forEach(({ a, m, o }) => { if (!ownAcct(a) || !o.refunded || !o.cost || /claim|dispute/i.test(o.rtype || '')) return; const k = retKey(a.id, m, o.order); const r = (K.returns || {})[k]; const cell = r ? `<span class="pill p-${r.back ? 'ok' : 'grey'}">${r.back ? 'Back in stock' : 'Did not come back'}</span>` : `<button class="btn sm" data-act="retSet" data-k="${esc(k)}" data-v="1" data-help="The buyer sent it back and it can be sold again: it goes back on the shelf and its cost leaves this month.">Came back</button><button class="btn sm" data-act="retSet" data-k="${esc(k)}" data-v="0">Not back</button>`; h = h.replace(new RegExp(`(<tr class="click" data-act="[a-zA-Z]+" data-o="${o.order.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>(?:(?!</tr>).)*?)<td class="note">([^<]*)</td></tr>`), `$1<td class="note">$2 ${cell}</td></tr>`); });
+  return h;
+};
+// stock count: what is on the shelf against what the tool expects
+function stockCountCard() {
+  const P = activeParts('stock_count').sort((x, y) => String(y._file.added).localeCompare(String(x._file.added)));
+  if (!P.length) return `<div class="card"><h2>Stock count ${help('Count the shelf and add the file (SKU + quantity, any layout). The tool shows the difference with what should be there, and one tap makes the count the new stock.')}</h2><p class="note">No stock count yet. Add a file with the SKUs and the counted quantity (any name, any layout).</p></div>`;
+  const p = P[0], R = fifo(); const rows = p.rows.map(r => { const x = R[r.sku] || { left: 0, value: 0 }; const unit = x.left > 0 ? Math.round(x.value / x.left) : ((costsFor(null).bySku.get(r.sku) || {}).cost || 0); return { sku: r.sku, counted: r.qty, expected: x.left, diff: r.qty - x.left, unit, val: (r.qty - x.left) * unit }; }).filter(r => r.diff !== 0).sort((a, b) => a.val - b.val);
+  const tot = rows.reduce((s, r) => s + r.val, 0);
+  return `<div class="card"><div class="row between"><h2>Stock count · ${esc(p._file.name)} ${help('Counted on the shelf minus what the tool expects (stock in − sold + returns). A minus means missing stock.')}</h2>${rows.length ? `<button class="btn sm pri" data-act="scApply" data-help="Adds a correction for each SKU so the stock equals the count. The correction shows in the stock list with the note “stock count”.">Use the count as the stock</button>` : ''}</div>
+  <p class="note">${rows.length ? `${rows.length} SKUs differ · value ${fmt(tot)} (${tot < 0 ? 'missing' : 'extra'})` : 'Every SKU matches the count.'}</p>${rows.length ? `<div class="tw"><table><thead><tr><th>SKU</th><th class="r">Counted</th><th class="r">Expected</th><th class="r">Difference</th><th class="r">Value</th></tr></thead><tbody>${rows.slice(0, 500).map(r => `<tr><td class="num">${esc(r.sku)}</td><td class="r num">${r.counted}</td><td class="r num">${r.expected}</td><td class="r num"><b>${r.diff > 0 ? '+' : ''}${r.diff}</b></td><td class="r">${money(r.val)}</td></tr>`).join('')}</tbody></table></div>` : ''}</div>`;
+}
+const _vstock = V.stock; V.stock = () => { const h = _vstock(); const i = h.indexOf('<div class="card">'); return i > -1 ? h.slice(0, i) + stockCountCard() + h.slice(i) : h + stockCountCard(); };
+Object.assign(ACT, {
+  scApply: async () => { const p = activeParts('stock_count').sort((x, y) => String(y._file.added).localeCompare(String(x._file.added)))[0]; if (!p) return; const R = fifo(); let n = 0; p.rows.forEach(r => { const x = R[r.sku] || { left: 0, value: 0 }; const d = r.qty - x.left; if (!d) return; const unit = x.left > 0 ? Math.round(x.value / x.left) : ((costsFor(null).bySku.get(r.sku) || {}).cost || 0); K.stockIn.push({ id: 'c' + Date.now().toString(36) + n, sku: r.sku, qty: d, cost: unit, date: p.date || today(), note: 'stock count ' + p._file.name }); n++; }); await save('stockIn'); invalidate(); toast(`${n} corrections added. The stock now equals the count.`); render(); }
+});
+
+// ====================== VAT ======================
+function vatFor(a, A) {
+  if (!a || !A || !A.sums) return null; const st = a.vat || '';
+  if (!/VAT registered/i.test(st)) return { reg: false, due: 0 };
+  const uk = A.kind === 'ebay' ? ((A.sites || {})['UK (£)'] || { gross: 0 }).gross : A.sums.gross;
+  const back = A.kind === 'ebay' ? (A.orders || []).reduce((s, o) => s + (o.back || 0), 0) : (A.sums.refunds || 0);
+  const turnover = Math.max(0, uk - (A.kind === 'ebay' ? Math.round(back * (uk / Math.max(1, A.sums.gross || 1))) : back));
+  if (/flat/i.test(st)) { const pct = +a.vatFlat || 0; return { reg: true, flat: true, pct, turnover, due: Math.round(turnover * pct / 100) }; }
+  const fees = A.kind === 'ebay' ? ['fvf', 'reg', 'intl', 'inad', 'below', 'insertion', 'ads', 'subscription', 'otherFees'].reduce((s, k) => s + (A.sums[k] || 0), 0) - (A.sums.feeCredits || 0) - (A.sums.adsCredit || 0) : Math.abs(A.sums.fees || 0);
+  const out = Math.round(turnover / 6), inFees = a.vatFees === false ? 0 : Math.round(Math.max(0, fees) / 6), inCost = a.vatCost ? Math.round((A.cogs || 0) / 6) : 0;
+  return { reg: true, flat: false, turnover, out, inFees, inCost, due: out - inFees - inCost };
+}
+T.vat = (a, m, A) => {
+  const v = vatFor(a, A) || { reg: false };
+  const opts = (K.reg['VAT status'] || ['Not VAT registered', 'VAT registered (standard)', 'VAT registered (flat rate)']).map(x => ({ v: x, l: x }));
+  return `<div class="card"><h2>VAT ${help('Standard: VAT on UK sales (1/6 of the price incl. postage, after refunds) minus VAT inside eBay fees (and, if you have VAT invoices, VAT inside the cost of goods). Flat rate: your flat % of the UK sales incl. VAT. For a VAT-registered account the VAT is taken off the profit before the split.')}</h2>
+  <div class="form"><label>VAT status of ${esc(a.name)}${dd('vatSt', null, a.vat || 'Not VAT registered', opts, `data-act-change="vatSet" data-id="${a.id}"`)}</label>${/flat/i.test(a.vat || '') ? `<label>Flat rate %<input class="in" id="vatFlat" inputmode="decimal" value="${esc(a.vatFlat ?? '')}" placeholder="e.g. 12.5" data-act-change="vatSet" data-id="${a.id}"></label>` : ''}${v.reg && !v.flat ? `<label class="row note"><input type="checkbox" data-act-change="vatSet" data-id="${a.id}" data-f="vatFees" ${a.vatFees === false ? '' : 'checked'}> Claim back the VAT inside eBay fees</label><label class="row note"><input type="checkbox" data-act-change="vatSet" data-id="${a.id}" data-f="vatCost" ${a.vatCost ? 'checked' : ''}> Claim back VAT inside the cost of goods (only with VAT invoices)</label>` : ''}${v.reg ? `<label class="row note"><input type="checkbox" data-act-change="vatSet" data-id="${a.id}" data-f="vatOff" ${a.vatOff === false ? '' : 'checked'}> Take the VAT off the profit (and the split)</label>` : ''}</div>
+  ${!v.reg ? '<p class="note">Not VAT registered: no VAT to pay on these sales. eBay fees include VAT that cannot be claimed back.</p>' : v.flat ? `<div class="calc"><span class="l">UK sales incl. VAT, after refunds</span>${money(v.turnover)}<span class="l">Flat rate ${v.pct}%</span><span></span><span class="l tt">VAT to pay</span><span class="tt">${money(v.due)}</span></div>${!v.pct ? '<p class="check w">Type the flat rate % above.</p>' : ''}` : `<div class="calc"><span class="l">UK sales incl. VAT, after refunds</span>${money(v.turnover)}<span class="l">VAT on sales (1/6)</span>${money(v.out)}<span class="l">VAT inside eBay fees (claim back)</span>${money(-v.inFees)}${v.inCost ? `<span class="l">VAT inside cost of goods (claim back)</span>${money(-v.inCost)}` : ''}<span class="l tt">VAT to pay for the month</span><span class="tt">${money(v.due)}</span></div>`}
+  <p class="note">Sales to buyers outside the UK are left out (eBay or the buyer's country handles that VAT). Check the final return with your accountant.</p></div>`;
+};
+document.addEventListener('change', async ev => {
+  const t = ev.target; if (!t.dataset || t.dataset.actChange !== 'vatSet') return; const a = acctById(t.dataset.id); if (!a) return;
+  if (t.id === 'vatSt') a.vat = t.value; else if (t.id === 'vatFlat') a.vatFlat = AD.num(t.value) || ''; else if (t.dataset.f) a[t.dataset.f] = t.checked;
+  await save('acc'); invalidate(); toast('VAT saved. Profit and split are worked out again.'); render();
+});
+setTimeout(function vatList() { if (!K.reg) return setTimeout(vatList, 500); const L = K.reg['VAT status']; if (L && !L.some(x => /flat/i.test(x))) { L.push('VAT registered (flat rate)'); save('reg'); } }, 500);
+
+// ====================== AliExpress: card amount against VA cost ======================
+function fxCard(a, m, A) {
+  if (!A || !A.aeMatch || !A.aeMatch.hit) return '';
+  const d = A.aeMatch.fxDiff || 0; const L = (A.orders || []).filter(o => o.cardPaid && Math.abs(o.cardPaid - o.cost) >= 5).sort((x, y) => Math.abs(y.cardPaid - y.cost) - Math.abs(x.cardPaid - x.cost));
+  return `<div class="card"><h2>AliExpress: card against VA cost ${help('For every order whose AliExpress payment was found on the card, the amount the card paid (in £, after the dollar rate and card fees) against the cost in the VA sheet. A big total means the VA sheet uses a different rate or misses fees.')}</h2><p>${A.aeMatch.hit} payments found · the card paid <b>${fmt(Math.abs(d))} ${d >= 0 ? 'more' : 'less'}</b> than the VA sheet in total.</p>${L.length ? `<div class="tw"><table><thead><tr><th>Order</th><th class="r">VA cost</th><th class="r">Card paid</th><th class="r">Difference</th></tr></thead><tbody>${L.slice(0, 40).map(o => `<tr class="click" data-act="order" data-o="${esc(o.order)}"><td class="num">${esc(o.order)}</td><td class="r">${money(o.cost)}</td><td class="r">${money(o.cardPaid)}</td><td class="r">${money(o.cardPaid - o.cost)}</td></tr>`).join('')}</tbody></table></div>` : ''}</div>`;
+}
+const _ts3 = T.summary; T.summary = (a, m, A) => { let h = _ts3(a, m, A); if (A && A.returnedCost) h += `<div class="card note">Items back in stock this month: ${fmt(A.returnedCost)} of cost taken off.</div>`; if (A && A.vatDue) h += `<div class="card note">VAT to pay ${fmt(A.vatDue)} is taken off the profit (VAT tab).</div>`; return h + fxCard(a, m, A); };
+
+// ====================== Google: reconnect on the next tap, by itself ======================
+let RA = 0;
+document.addEventListener('pointerdown', ev => {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB || !GW.email || $('#lockscr')) return;
+  if (gwOk() && GW.exp - Date.now() > 5 * 60000) return; if (Date.now() - RA < 120000) return;
+  if (ev.target.closest && ev.target.closest('input,select,textarea,[data-act="gwSignIn"]')) return;
+  RA = Date.now(); gwSignIn().catch(() => { });
+}, true);
+
+// ====================== team members: their own Google sign-in, only their accounts ======================
+let ME = null;
+function whoAmI() { const em = (typeof GW !== 'undefined' && GW.email || '').toLowerCase(); const L = K.prefs.members || []; ME = em && !/^aemporio6@gmail\.com$/i.test(em) ? L.find(x => x.email.toLowerCase() === em) || null : null; return ME; }
+const _accPass = accPass;
+accPass = function (a) { if (!_accPass(a)) return false; whoAmI(); return !ME || !(ME.accounts || []).length || ME.accounts.includes(a.id); };
+const _railHTML = railHTML;
+railHTML = function () { whoAmI(); if (!ME) return _railHTML(); const keep = K.prefs.viewAs; K.prefs.viewAs = ME.role || 'VA'; try { return _railHTML(); } finally { K.prefs.viewAs = keep; } };
+async function shareWith(email, role, withFolders) {
+  const ids = []; try { const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk data.json' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id)'); const j = await (await gwFetch(u)).json(); (j.files || []).forEach(f => ids.push(f.id)); } catch (e) { }
+  if (withFolders) roots().filter(r => !r.bad).forEach(r => ids.push(r.id));
+  let ok = 0; for (const id of ids) { try { await gwFetch(`${DAPI}/${id}/permissions?sendNotificationEmail=true&supportsAllDrives=true`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'user', role: role === 'Partner' ? 'writer' : 'writer', emailAddress: email }) }); ok++; } catch (e) { logErr(e, 'share with ' + email); } }
+  return ok;
+}
+function membersCard() {
+  const L = K.prefs.members || []; if (whoAmI()) return `<div class="card"><h2>You are signed in as ${esc(ME.name || ME.email)} (${esc(ME.role)})</h2><p class="note">You see ${ME.accounts && ME.accounts.length ? 'only your accounts: ' + esc(ME.accounts.map(id => (acctById(id) || {}).name).filter(Boolean).join(', ')) : 'every account'}. The owner can change this.</p></div>`;
+  return `<div class="card"><h2>Team members ${help('A VA or partner signs in with their own Google account and sees only the accounts you pick. The tool shares the data file (and, if ticked, the Drive folders) with their Gmail. This limits what the screens show; anyone with the shared file can still open it in Drive, so share only with people you trust.')}</h2>
+  <div class="list">${L.map((x, i) => `<div class="li" style="flex-wrap:wrap"><div class="grow" style="min-width:200px"><div class="t">${esc(x.name || x.email)} · ${esc(x.role)}</div><div class="d">${esc(x.email)} · ${x.accounts && x.accounts.length ? esc(x.accounts.map(id => (acctById(id) || {}).name).filter(Boolean).join(', ')) : 'all accounts'}${x.shared ? ' · shared ' + esc(String(x.shared).slice(0, 10)) : ''}</div></div><button class="btn sm" data-act="mbShare" data-i="${i}">Share again</button><button class="btn sm" data-act="mbDel" data-i="${i}">Remove</button></div>`).join('') || '<p class="note">No team members yet.</p>'}</div>
+  <div class="form" style="margin-top:8px"><label>Their Gmail<input class="in" id="mbEmail" type="email" placeholder="name@gmail.com"></label><label>Person${dd('mbName', 'Person', '', [{ v: '', l: '— none —' }].concat(K.reg.Person))}</label><label>Role${dd('mbRole', null, 'VA', [{ v: 'VA', l: 'VA' }, { v: 'Partner', l: 'Partner' }])}</label></div>
+  <div class="chips" style="margin:6px 0">${K.acc.map(a => `<label class="chip"><input type="checkbox" class="mbAcc" value="${esc(a.id)}" hidden>${esc(a.name)}</label>`).join('')}</div><p class="note">Tick their accounts (none ticked = all).</p>
+  <label class="row note"><input type="checkbox" id="mbFold" checked> Also share the Drive folders the tool reads, so they can add files there</label>
+  <div class="row" style="margin-top:8px"><button class="btn pri" data-act="mbAdd">Add and share</button></div></div>`;
+}
+Object.assign(ACT, {
+  mbAdd: async () => { const email = ($('#mbEmail').value || '').trim().toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Type their Gmail address.'); return; } const m = { email, name: $('#mbName').value && $('#mbName').value !== '__add' ? $('#mbName').value : '', role: $('#mbRole').value, accounts: $$('.mbAcc').filter(c => c.checked).map(c => c.value) }; K.prefs.members = (K.prefs.members || []).filter(x => x.email !== email).concat([m]); await save('prefs'); if (typeof IS_WEB !== 'undefined' && IS_WEB && gwOk()) { const n = await shareWith(email, m.role, $('#mbFold').checked); m.shared = n ? new Date().toISOString() : ''; await save('prefs'); toast(n ? `Shared with ${email}. They open the same link and sign in with their Google.` : 'Saved, but sharing did not work. Reconnect Google and tap “Share again”.'); } else toast('Saved. Sign in with Google, then tap “Share again”.'); render(); },
+  mbShare: async el => { const m = (K.prefs.members || [])[+el.dataset.i]; if (!m) return; if (!gwOk()) { toast('Sign in with Google first.'); return; } const n = await shareWith(m.email, m.role, true); m.shared = n ? new Date().toISOString() : m.shared; await save('prefs'); toast(n ? 'Shared again.' : 'Sharing did not work.'); render(); },
+  mbDel: async el => { (K.prefs.members || []).splice(+el.dataset.i, 1); await save('prefs'); toast('Removed from the list. To stop their access fully, remove them from the file in Google Drive (Share).'); render(); }
+});
+// a member's device finds the owner's data file that was shared with them
+(function () { if (typeof GWDB === 'undefined') return; })();
+
+// ====================== daily backups in Drive, and restore ======================
+const BK = { folder: null, list: null };
+async function bkFolder() {
+  if (BK.folder) return BK.folder; const u = new URL(DAPI); u.searchParams.set('q', "name = 'Audit Desk backups' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and 'me' in owners"); u.searchParams.set('fields', 'files(id)');
+  const j = await (await gwFetch(u)).json(); if (j.files && j.files[0]) return (BK.folder = j.files[0].id);
+  const c = await (await gwFetch(`${DAPI}?fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Audit Desk backups', mimeType: 'application/vnd.google-apps.folder' }) })).json(); return (BK.folder = c.id);
+}
+async function bkDaily(force) {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB || !gwOk() || whoAmI()) return; const d = today(); if (!force && K.prefs.driveBackup === d) return;
+  try {
+    const f = await bkFolder(); const data = { app: 'Audit Desk', v: APPV, at: new Date().toISOString(), kv: Object.fromEntries(KEYS.map(k => [k, K[k]])), kvOnly: true };
+    const fd = new FormData(); fd.append('metadata', new Blob([JSON.stringify({ name: `Audit Desk backup ${d}.json`, parents: [f], mimeType: 'application/json' })], { type: 'application/json' })); fd.append('file', new Blob([JSON.stringify(data)], { type: 'application/json' }));
+    await gwFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', body: fd });
+    K.prefs.driveBackup = d; await save('prefs');
+    const L = await bkList(); for (const x of L.slice(30)) { try { await gwFetch(`${DAPI}/${x.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"trashed":true}' }); } catch (e) { } } // keeps the last 30 days
+  } catch (e) { if (e.code !== 'needs_reauth') logErr(e, 'daily backup'); }
+}
+async function bkList() { const f = await bkFolder(); const u = new URL(DAPI); u.searchParams.set('q', `'${f}' in parents and trashed = false`); u.searchParams.set('orderBy', 'createdTime desc'); u.searchParams.set('fields', 'files(id,name,createdTime,size)'); u.searchParams.set('pageSize', '60'); const j = await (await gwFetch(u)).json(); return (BK.list = j.files || []); }
+setInterval(() => bkDaily(false), 10 * 60000); setTimeout(() => bkDaily(false), 20000);
+function backupCard() {
+  if (typeof IS_WEB === 'undefined' || !IS_WEB) return '';
+  return `<div class="card"><div class="row between"><h2>Daily backups in Drive ${help('Every day the tool saves a copy of everything you typed and decided (accounts, splits, issues, locks, expenses, lists) in Google Drive → “Audit Desk backups”. The last 30 days are kept. The files themselves stay in Drive and are read again by themselves.')}</h2><div class="row"><button class="btn sm" data-act="bkNow">Back up now</button><button class="btn sm" data-act="bkLoad">${BK.list ? 'Refresh' : 'Show backups'}</button></div></div>
+  <p class="note">Last daily backup: ${esc(K.prefs.driveBackup || 'not yet')}</p>${BK.list ? `<div class="list">${BK.list.map(f => `<div class="li"><div class="grow"><div class="t">${esc(f.name)}</div><div class="d">${esc(String(f.createdTime).replace('T', ' ').slice(0, 16))}</div></div><button class="btn sm" data-act="bkRestore" data-id="${esc(f.id)}" data-n="${esc(f.name)}">Restore</button></div>`).join('') || '<p class="note">No backups yet.</p>'}</div>` : ''}</div>`;
+}
+Object.assign(ACT, {
+  bkNow: async () => { if (!gwOk()) { toast('Sign in with Google first.'); return; } spin(2000); await bkDaily(true); await bkList().catch(() => { }); toast('Backed up to Drive → Audit Desk backups.'); render(); },
+  bkLoad: async () => { if (!gwOk()) { toast('Sign in with Google first.'); return; } await bkList().catch(e => logErr(e, 'backups')); render(); },
+  bkRestore: el => layer(`<h2>Restore ${esc(el.dataset.n)}?</h2><p>Accounts, splits, issues, locks, expenses and lists go back to that day. Today's version is backed up first, so this can be undone.</p><div class="row"><button class="btn pri" data-act="bkGo" data-id="${esc(el.dataset.id)}">Yes, restore</button><button class="btn" data-act="close">Cancel</button></div>`),
+  bkGo: async el => { try { await bkDaily(true); const d = JSON.parse(await (await gwFetch(`${DAPI}/${el.dataset.id}?alt=media`)).text()); if (d.app !== 'Audit Desk') throw new Error('Not an Audit Desk backup'); for (const k of KEYS) if (d.kv[k] !== undefined) K[k] = d.kv[k]; await save(...KEYS); invalidate(); closeLayer(); toast(`Restored the backup from ${String(d.at).slice(0, 10)}.`); log('Restored Drive backup ' + String(d.at).slice(0, 10)); go('home'); } catch (e) { logErr(e, 'restore'); toast('Could not restore: ' + e.message); } }
+});
+
+// ====================== reminders on WhatsApp / e-mail ======================
+function contactsCard() {
+  const P = K.reg.Person || []; K.people = K.people || {};
+  return `<div class="card"><h2>Phone and e-mail of each person ${help('Used for the “Send on WhatsApp” and “E-mail” buttons on reminders. WhatsApp numbers with the country code, e.g. 447700900123 or 923001234567.')}</h2><div class="tw"><table><thead><tr><th>Person</th><th>WhatsApp number</th><th>E-mail</th></tr></thead><tbody>${P.map(p => { const c = K.people[p] || {}; return `<tr><td>${esc(p)}</td><td><input class="in" data-pc="${esc(p)}" data-f="phone" inputmode="tel" value="${esc(c.phone || '')}" placeholder="447…/923…"></td><td><input class="in" data-pc="${esc(p)}" data-f="email" type="email" value="${esc(c.email || '')}"></td></tr>`; }).join('')}</tbody></table></div></div>`;
+}
+document.addEventListener('change', async ev => { const t = ev.target; if (!t.dataset || !t.dataset.pc) return; K.people = K.people || {}; const c = K.people[t.dataset.pc] = K.people[t.dataset.pc] || {}; c[t.dataset.f] = t.value.trim().replace(t.dataset.f === 'phone' ? /[^\d]/g : /\s/g, ''); await save('people'); toast('Saved.'); });
+function sendBtns(text, person) {
+  const c = (K.people || {})[person] || {}; const t = encodeURIComponent(text);
+  return `<a class="btn sm" href="https://wa.me/${esc(c.phone || '')}?text=${t}" target="_blank" rel="noopener" data-help="Opens WhatsApp with the message ready${c.phone ? ' for ' + esc(person) : ''}.">Send on WhatsApp</a><a class="btn sm" href="mailto:${esc(c.email || '')}?subject=${encodeURIComponent('Audit Desk: files needed')}&body=${t}" data-help="Opens your e-mail with the message ready.">E-mail</a>`;
+}
+// next to every “Copy message for the VA”
+let SB = null; new MutationObserver(() => { clearTimeout(SB); SB = setTimeout(() => { $$('[data-act="copyVA"]').forEach(b => { if (b.nextElementSibling && b.nextElementSibling.classList.contains('sendwrap')) return; const a = acctById(b.dataset.acct) || { va: '' }; let txt = 'Hello, please download last month’s files for every account and put them in the shared Drive folder. Thank you.'; if (b.dataset.acct) { try { txt = vaMessage(b.dataset.acct, b.dataset.month); } catch (e) { return; } } const w = document.createElement('span'); w.className = 'sendwrap row'; w.style.display = 'inline-flex'; w.style.gap = '6px'; w.innerHTML = sendBtns(txt, a.va); b.after(w); }); }, 60); }).observe(document.body, { childList: true, subtree: true });
+
+// Settings: lock, team, backups, contacts
+const _vset3 = V.settings; V.settings = () => { const h = _vset3(); const i = h.indexOf('<div class="card"', h.indexOf('</div></div>') + 1); return membersCard() + backupCard() + h + contactsCard(); };
+// next bar: returns that need an answer
+const _nextList3 = nextList;
+nextList = function () { const L = _nextList3(); try { const R = undecidedReturns(); if (R.length) L.splice(1, 0, { t: `${R.length} refunded own-stock order${R.length > 1 ? 's' : ''}: did the item come back to the shelf?`, b: 'Answer', act: 'nxGo', v: 'refunds' }); } catch (e) { } return L; };
+Object.assign(HELPT, { retSet: 'Says whether the refunded item came back to the shelf.', scApply: 'Makes the counted quantity the stock.', mbAdd: 'Adds the person and shares the data with their Gmail.', mbShare: 'Shares the data file again.', mbDel: 'Removes the person from the list.', bkNow: 'Saves a backup in Drive now.', bkLoad: 'Lists the backups in Drive.', bkRestore: 'Goes back to that day.', bkGo: 'Yes, restore.' });
 
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
