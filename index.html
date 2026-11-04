@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.8.0';
+const APPV = '2.9.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -2452,7 +2452,7 @@ async function driveSync(manual) {
       if (meta && meta.mimeType === 'application/vnd.google-apps.folder') await walkDrive(r.id, meta.title || r.name, found, 0);
       else if (meta && meta.id) found.push(Object.assign({ path: '' }, meta));
       for (let i = n0; i < found.length; i++) found[i]._root = r;
-      r.bad = false; if (meta && meta.title) r.title = meta.title; r.isFolder = !!(meta && meta.mimeType === 'application/vnd.google-apps.folder');
+      r.lastRead = new Date().toISOString(); r.count = found.length - n0; r.bad = false; if (meta && meta.title) r.title = meta.title; r.isFolder = !!(meta && meta.mimeType === 'application/vnd.google-apps.folder');
     }
     // whole Drive: audit files anywhere (spreadsheets / reports of the last 60 days, screenshots and statements by name)
     if ((K.prefs.driveScope || 'some') === 'all' && !DRV.only) {
@@ -2480,7 +2480,7 @@ async function driveSync(manual) {
         const res = await intake(file, old ? old.hint || {} : (f._root && f._root.acct ? { acct: f._root.acct } : {}), f.path);
         if (f._wide && res.rec && !res.dup && res.rec.parts.every(p => ['unknown', 'stock_cost', 'market_sales', 'other_pic'].includes(p.kind) || p.notNeeded)) { const i = FILES.indexOf(res.rec); if (i > -1) FILES.splice(i, 1); await DB.del('files', res.rec.id).catch(() => { }); seen[f.id] = f.modifiedTime; DRV.skipped = (DRV.skipped || 0) + 1; continue; }
         if (res.rec) { res.rec.driveId = f.id; res.rec.driveUrl = f.viewUrl || ''; res.rec.driveParent = f.parentId || f._parent || ''; if (old) res.rec.parts.forEach(p => { const q = old.parts.find(x => x.sheet === p.sheet && x.placedBy === 'your choice'); if (q) { p.acct = q.acct; p.waiting = false; p.placedBy = 'your choice'; } const qm = old.parts.find(x => x.sheet === p.sheet && x.month && (x.kind === 'screenshot' || x.kind === 'pdf')); if (qm && (p.kind === 'screenshot' || p.kind === 'pdf')) p.month = qm.month; }); await DB.put('files', res.rec.id, res.rec); }
-        out.push({ name, msgs: res.msgs, rec: res.rec }); newOnes++;
+        out.push({ name, msgs: res.msgs, rec: res.rec }); newOnes++; if (f._root) { f._root.lastNew = new Date().toISOString(); f._root.newTotal = (f._root.newTotal || 0) + 1; }
         seen[f.id] = f.modifiedTime;
       } catch (e) { logErr(e, 'drive file ' + f.title); out.push({ name: f.title, msgs: [{ t: 'warn', m: `Could not read it from Drive this time (${e.code || e.message}). The tool tries again on the next check.` }] }); }
     }
@@ -4153,6 +4153,54 @@ Object.assign(ACT, {
   refreshAll: () => refreshAll(), linkImport: () => linkImport(),
   invCopy: () => { const e = $('#invUrl'); if (!e) return; e.select(); try { navigator.clipboard.writeText(e.value); } catch (x) { document.execCommand('copy'); } toast('Invite link copied.'); }
 });
+
+// v2.9 — "links from my team" list, and the month-end summary (copy / WhatsApp).
+const daysAgo = iso => iso ? Math.floor((Date.now() - Date.parse(iso)) / 864e5) : null;
+const agoTxt = iso => { const d = daysAgo(iso); return d == null ? 'never' : d <= 0 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago'; };
+function linksListCard() {
+  const L = roots().map((r, i) => ({ r, i })).filter(x => x.r.fromLink || x.r.from);
+  if (!L.length) return '';
+  const by = {}; L.forEach(x => (by[x.r.from || 'No name'] = by[x.r.from || 'No name'] || []).push(x));
+  return `<div class="card"><h2>Links from my team ${help('Every Drive link you added, by who sent it: when the tool last looked, when the last new file came, and a warning if nothing new arrived for 7 days.')}</h2>
+  ${Object.entries(by).map(([who, xs]) => `<h3>${esc(who)}</h3><div class="tw"><table><thead><tr><th>Link</th><th>Files</th><th>Last looked</th><th>Last new file</th><th></th></tr></thead><tbody>${xs.map(({ r, i }) => { const stale = r.lastNew ? daysAgo(r.lastNew) >= 7 : daysAgo(r.added) >= 7; return `<tr><td>${esc(r.title || r.name)}${r.bad ? ' <span class="chip bad">no access</span>' : ''}</td><td>${r.count == null ? '—' : r.count}</td><td>${agoTxt(r.lastRead)}</td><td>${r.lastNew ? agoTxt(r.lastNew) : 'none yet'}${stale && !r.bad ? ' <span class="chip warn">nothing new for 7+ days</span>' : ''}</td><td><button class="btn sm" data-act="lnkRead" data-i="${i}">Read now</button> <button class="btn sm" data-act="driveDel" data-i="${i}">Remove</button></td></tr>`; }).join('')}</tbody></table></div>`).join('')}</div>`;
+}
+const _linkCard10 = linkCard; linkCard = function () { return _linkCard10() + linksListCard(); };
+
+// ---- month-end summary ----
+function monthSummary(month) {
+  const lines = [], per = {}, short = a => a.name;
+  const accs = K.acc.filter(accPass);
+  const miss = [];
+  accs.forEach(a => { let g; try { g = steps(a.id, month); } catch (e) { return; } const need = g.S.filter(s => !s.done && s.need && s.kind); const locked = !!K.locks[a.id + '|' + month]; miss.push({ a, need, locked, open: g.S.find(s => s.k === 'review' && !s.done) ? 1 : 0 }); });
+  const iss = issuesAll().filter(i => i.month === month && isOpen(i) && accs.some(a => a.id === i.acctId));
+  iss.forEach(i => { const who = i.owner || 'Owner'; (per[who] = per[who] || []).push(i); });
+  const head = `Audit Desk — ${MLL(month)}`;
+  lines.push(head);
+  const done = miss.filter(m => m.locked).length;
+  lines.push(`${done} of ${miss.length} accounts approved and locked.`);
+  miss.filter(m => !m.locked).forEach(m => { lines.push(`• ${short(m.a)}: ${m.need.length ? 'missing ' + m.need.map(s => s.t).join(', ') : 'all files in'}${per && iss.filter(i => i.acctId === m.a.id).length ? '; ' + iss.filter(i => i.acctId === m.a.id).length + ' open issues' : ''}`); });
+  if (iss.length) { lines.push(''); lines.push(`Open issues by person:`); Object.entries(per).forEach(([w, L]) => lines.push(`• ${w}: ${L.length}`)); }
+  if (!miss.filter(m => !m.locked).length) lines.push('Everything is approved. Nothing is waiting.');
+  const personText = (w, L) => `Hello ${w.replace(/\s*\(.*\)/, '')}, for ${MLL(month)} these are waiting from you:\n` + L.slice(0, 25).map(i => `• ${acctById(i.acctId) ? acctById(i.acctId).name : ''} ${i.type}${i.orderId ? ' (' + i.orderId + ')' : ''}: ${i.next || ''}`.trim()).join('\n') + (L.length > 25 ? `\n…and ${L.length - 25} more` : '') + '\nPlease reply when done. Thank you.';
+  return { month, text: lines.join('\n'), per, personText, counts: { accounts: miss.length, locked: done, issues: iss.length } };
+}
+function summaryCard() {
+  const m = S.sumMonth || AD.addMonths(thisMonth(), -1); let r; try { r = monthSummary(m); } catch (e) { return ''; }
+  const months = [0, 1, 2, 3].map(n => AD.addMonths(thisMonth(), -n));
+  const wa = (phone, t) => `https://wa.me/${esc(String(phone || '').replace(/\D/g, ''))}?text=${encodeURIComponent(t)}`;
+  const me = (K.people[K.prefs.owner] || {}).phone || '';
+  return `<div class="card"><div class="row between"><h2>Month-end summary ${help('What is still waiting for each month: missing files, open issues, and who they are with. Copy it, or open WhatsApp with the message ready, for yourself or for each person.')}</h2><select class="in" id="sumMonth" data-act="sumMonth">${months.map(x => `<option value="${x}" ${x === m ? 'selected' : ''}>${esc(MLL(x))}</option>`).join('')}</select></div>
+  <pre class="note" id="sumTxt" style="white-space:pre-wrap">${esc(r.text)}</pre>
+  <div class="row"><button class="btn sm" data-act="sumCopy">Copy</button><a class="btn sm" target="_blank" rel="noopener" href="${wa(me, r.text)}">WhatsApp (me)</a></div>
+  ${Object.keys(r.per).length ? `<div class="tw"><table><thead><tr><th>Person</th><th>Waiting</th><th></th></tr></thead><tbody>${Object.entries(r.per).map(([w, L]) => { const ph = (K.people[w] || {}).phone || ''; return `<tr><td>${esc(w)}</td><td>${L.length}</td><td><a class="btn sm" target="_blank" rel="noopener" href="${wa(ph, r.personText(w, L))}">WhatsApp ${ph ? '' : '(choose chat)'}</a></td></tr>`; }).join('')}</tbody></table></div>` : ''}</div>`;
+}
+const _vhome10 = V.home; V.home = function () { return _vhome10.apply(this, arguments) + summaryCard(); };
+Object.assign(ACT, {
+  lnkRead: async el => { const r = roots()[+el.dataset.i]; if (!r) return; DRV.only = r.id; try { await driveSync(true); } finally { DRV.only = null; } render(); },
+  sumMonth: el => { S.sumMonth = el.value; render(); },
+  sumCopy: () => { const t = ($('#sumTxt') || {}).textContent || ''; try { navigator.clipboard.writeText(t); } catch (e) { const x = document.createElement('textarea'); x.value = t; document.body.appendChild(x); x.select(); document.execCommand('copy'); x.remove(); } toast('Copied.'); }
+});
+document.addEventListener('change', ev => { const t = ev.target; if (t && (t.dataset || {}).act && ['sumMonth', 'mapRename'].includes(t.dataset.act) && ACT[t.dataset.act]) ACT[t.dataset.act](t); });
 
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
