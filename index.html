@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Audit Desk</title><meta name="theme-color" content="#1d4f91">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com https://*.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.google.com data: blob:; img-src 'self' data: blob: https://*.googleusercontent.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://*.google.com https://*.gstatic.com; worker-src 'self' blob:; frame-src https://*.google.com; font-src 'self' data: https://*.gstatic.com; object-src 'none'; base-uri 'none'">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231d4f91'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>:root{--bg:#f3f5f8;--panel:#fff;--ink:#14202e;--muted:#5b6877;--line:#dfe4ea;--soft:#eef2f6;--accent:#1d4f91;--accent-soft:#e3ecf8;--ok:#1c7a44;--ok-soft:#e2f3e9;--warn:#a85d00;--warn-soft:#fbefd9;--bad:#b4271f;--bad-soft:#fbe5e2;--grey-soft:#eceff3;--f:system-ui,-apple-system,"Segoe UI",sans-serif;--fn:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f151c;--panel:#17202a;--ink:#e6ecf2;--muted:#97a3b1;--line:#2a3542;--soft:#1d2733;--accent:#7fb0f0;--accent-soft:#1c2d44;--ok:#5cc98a;--ok-soft:#14301f;--warn:#f0b35a;--warn-soft:#3a2a12;--bad:#f08177;--bad-soft:#3d1a17;--grey-soft:#222c37;color-scheme:dark}}
@@ -828,10 +829,10 @@ function within(d, ref, lo, hi) { if (!d || !ref) return false; const a = Date.p
 // Build cost maps from VA rows + stock rows (priority rules from the plan)
 // Other marketplaces (Amazon, TikTok Shop, OnBuy, Temu, Etsy, Shopify): settlement lines → orders, fees, refunds, payouts, cost, profit
 AD.auditMarket = function (rows, ctx) {
-  const by = new Map(); let payouts = 0, other = 0, otherN = 0; const costs = (ctx && ctx.costs) || { byOrder: new Map(), bySku: new Map() };
+  const by = new Map(), payoutList = []; let payouts = 0, other = 0, otherN = 0; const costs = (ctx && ctx.costs) || { byOrder: new Map(), bySku: new Map() };
   rows.forEach(r => {
     const t = String(r.type || '').toLowerCase(); const net = r.total != null ? r.total : (r.sales || r.fees ? (r.sales || 0) + (r.fees || 0) : (r.amount || 0) - Math.abs(r.fee || 0));
-    if (/transfer|payout|deposit|withdraw|disburse/.test(t)) { payouts += -net; return; }
+    if (/transfer|payout|deposit|withdraw|disburse/.test(t)) { payouts += -net; payoutList.push({ id: r.order || ('P' + payoutList.length), amount: -net, date: r.date || null, row: r.row || null }); return; }
     if (!r.order) { other += net; otherN++; return; }
     const o = by.get(r.order) || { order: r.order, date: r.date, sku: '', title: r.desc || '', qty: 0, gross: 0, fees: 0, refund: 0, net: 0, types: new Set() };
     const s = r.sales || (!r.sales && !/fee/.test(t) ? r.amount || 0 : 0);
@@ -847,7 +848,51 @@ AD.auditMarket = function (rows, ctx) {
     return { order: o.order, date: o.date, title: o.title, sku: o.sku, qty: o.qty, gross: o.gross, fees: o.fees, ads: 0, net: o.net, cost, costSrc: src, profit: o.net - (cost || 0), flags: sold && cost == null ? ['No cost found'] : [], rtype, back, refunded: sold && back >= o.gross - 1, types: [...o.types].join(', ') };
   });
   const sum = k => OL.reduce((a, o) => a + (o[k] || 0), 0); const net = sum('net') + other;
-  return { kind: 'market', orders: OL, sums: { gross: sum('gross'), refunds: sum('back'), fees: sum('fees'), net, other, otherN, payouts, orders: OL.filter(o => o.gross > 0).length, units: sum('qty') }, cogs, costKnown: known, nCostMissing: missing, profit: net - cogs, cash: { diff: 0, held: 0, heldOrders: {} }, health: {}, netFail: 0, plCheck: 0, orMatch: null, sites: {}, unknownTypes: {} };
+  return { kind: 'market', orders: OL, payoutList, sums: { gross: sum('gross'), refunds: sum('back'), fees: sum('fees'), net, other, otherN, payouts, orders: OL.filter(o => o.gross > 0).length, units: sum('qty') }, cogs, costKnown: known, nCostMissing: missing, profit: net - cogs, cash: { diff: 0, held: 0, heldOrders: {} }, health: {}, netFail: 0, plCheck: 0, orMatch: null, sites: {}, unknownTypes: {} };
+};
+
+// ---------- Reconciliation: match two lists of money movements (payouts vs bank, supplier cost vs card, ...) ----------
+// left/right items: { id, amount (minor units, same sign convention on both sides), date 'YYYY-MM-DD', ref?, desc? }
+// Never forces an uncertain match: certain ones are "matched", unsure ones are "review", guesses are only "suggestions".
+AD.RECON_VERSION = '1.0';
+AD.RULES_VERSION = '2026.11.1'; // bump when any audit formula, sign rule or policy changes
+AD.reconcile = function (left, right, o) {
+  o = Object.assign({ tol: 1, from: -1, to: 6, groupMax: 4, fuzzyPct: 0.01 }, o || {});
+  const dayN = d => d ? Math.round(Date.parse(d + 'T00:00:00Z') / 864e5) : null;
+  const L = (left || []).map((x, i) => Object.assign({ _k: 'L' + i }, x)).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
+  const R = (right || []).map((x, i) => Object.assign({ _k: 'R' + i }, x)).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.id).localeCompare(String(b.id)));
+  const usedL = new Set(), usedR = new Set(), M = [], norm = v => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const inWin = (l, r) => { const a = dayN(l.date), b = dayN(r.date); return a == null || b == null || (b - a >= o.from && b - a <= o.to); };
+  const gap = (l, r) => { const a = dayN(l.date), b = dayN(r.date); return a == null || b == null ? 99 : Math.abs(b - a); };
+  const take = (ls, rs, method, conf, status) => { ls.forEach(x => usedL.add(x._k)); rs.forEach(x => usedR.add(x._k)); const dl = ls.reduce((a, x) => a + x.amount, 0), dr = rs.reduce((a, x) => a + x.amount, 0); M.push({ l: ls.map(x => x.id), r: rs.map(x => x.id), method, confidence: conf, status, diff: dr - dl, lAmount: dl, rAmount: dr }); };
+  const idOf = (arr, id) => arr.find(x => x.id === id && !(arr === L ? usedL : usedR).has(x._k));
+  // 1. matches a person made (and pairs a person said are NOT a match)
+  const forbid = new Set((o.forbid || []).map(p => p.l + '||' + p.r));
+  (o.manual || []).forEach(p => { const l = idOf(L, p.l), r = idOf(R, p.r); if (l && r) take([l], [r], 'Manual', 'person', 'matched'); });
+  // 2. same reference on both sides and the amount agrees
+  const byRef = new Map(); R.forEach(r => { const k = norm(r.ref); if (k) (byRef.get(k) || byRef.set(k, []).get(k)).push(r); });
+  L.forEach(l => { if (usedL.has(l._k) || !norm(l.ref)) return; const c = (byRef.get(norm(l.ref)) || []).filter(r => !usedR.has(r._k) && Math.abs(r.amount - l.amount) <= o.tol && !forbid.has(l.id + '||' + r.id)); if (c.length === 1) take([l], c, 'Same reference', 'exact', 'matched'); });
+  // 3. same amount inside the date window (ambiguity is judged BEFORE anything is taken, so repeated equal amounts all stay "review")
+  const byAmt = new Map(); R.forEach(r => { if (!usedR.has(r._k)) (byAmt.get(r.amount) || byAmt.set(r.amount, []).get(r.amount)).push(r); });
+  const candOf = new Map(); const rCount = new Map();
+  L.forEach(l => { if (usedL.has(l._k)) return; const c = []; for (let a = l.amount - o.tol; a <= l.amount + o.tol; a++) (byAmt.get(a) || []).forEach(r => { if (!usedR.has(r._k) && inWin(l, r) && !forbid.has(l.id + '||' + r.id)) c.push(r); }); if (c.length) { candOf.set(l._k, c); c.forEach(r => rCount.set(r._k, (rCount.get(r._k) || 0) + 1)); } });
+  L.forEach(l => {
+    if (usedL.has(l._k)) return; const all = candOf.get(l._k); if (!all) return;
+    const amb = all.length > 1 || all.some(r => rCount.get(r._k) > 1);
+    const c = all.filter(r => !usedR.has(r._k)); if (!c.length) return;
+    c.sort((a, b) => gap(l, a) - gap(l, b) || String(a.id).localeCompare(String(b.id)));
+    take([l], [c[0]], 'Amount and date', amb ? 'ambiguous' : 'exact', amb ? 'review' : 'matched');
+  });
+  // 4. one bank line for several items, or one item for several bank lines
+  const subsetSum = (items, target, max) => { const n = items.length; let best = null; const go = (i, pick, sum) => { if (best) return; if (pick.length && Math.abs(sum - target) <= o.tol) { best = pick.slice(); return; } if (pick.length >= max || i >= n) return; for (let j = i; j < n && !best; j++) { pick.push(items[j]); go(j + 1, pick, sum + items[j].amount); pick.pop(); } }; go(0, [], 0); return best; };
+  R.forEach(r => { if (usedR.has(r._k)) return; const pool = L.filter(l => !usedL.has(l._k) && inWin(l, r) && !forbid.has(l.id + '||' + r.id) && Math.abs(l.amount) <= Math.abs(r.amount) + o.tol).slice(0, 14); if (pool.length < 2) return; const hit = subsetSum(pool, r.amount, o.groupMax); if (hit && hit.length > 1) take(hit, [r], 'Several items, one bank line', 'grouped', 'review'); });
+  L.forEach(l => { if (usedL.has(l._k)) return; const pool = R.filter(r => !usedR.has(r._k) && inWin(l, r) && !forbid.has(l.id + '||' + r.id) && Math.abs(r.amount) <= Math.abs(l.amount) + o.tol).slice(0, 14); if (pool.length < 2) return; const hit = subsetSum(pool, l.amount, o.groupMax); if (hit && hit.length > 1) take([l], hit, 'One item, several bank lines', 'grouped', 'review'); });
+  // 5. guesses only: close amount, close date. Never counted as matched.
+  const suggestions = [];
+  L.forEach(l => { if (usedL.has(l._k)) return; const c = R.filter(r => !usedR.has(r._k) && inWin(l, r) && !forbid.has(l.id + '||' + r.id) && Math.abs(r.amount - l.amount) <= Math.max(o.tol, Math.abs(l.amount) * o.fuzzyPct)).sort((a, b) => Math.abs(a.amount - l.amount) - Math.abs(b.amount - l.amount) || gap(l, a) - gap(l, b)); if (c.length) suggestions.push({ l: l.id, r: c[0].id, diff: c[0].amount - l.amount }); });
+  const leftOnly = L.filter(x => !usedL.has(x._k)).map(x => x.id), rightOnly = R.filter(x => !usedR.has(x._k)).map(x => x.id);
+  const m = M.filter(x => x.status === 'matched').length, rv = M.filter(x => x.status === 'review').length;
+  return { version: AD.RECON_VERSION, matches: M, suggestions, leftOnly, rightOnly, summary: { left: L.length, right: R.length, matched: m, review: rv, leftOnly: leftOnly.length, rightOnly: rightOnly.length, complete: !leftOnly.length && !rv } };
 };
 AD.buildCosts = function (vaRows, stockRows) {
   const byOrder = new Map();
@@ -950,7 +995,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '2.4.0';
+const APPV = '2.5.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -1021,7 +1066,7 @@ const DEFAULT_ACC = [
   { id: 'vcom', name: 'VCOM', seller: 'rumi-bazar-eu', aliases: ['BAY-101A', 'VCOM'], Team: 'Team Junaid', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Own stock', va: 'Junaid (VA)', vat: 'Not VAT registered', cf: {} },
   { id: 'com365', name: 'Com365', seller: '', aliases: ['BAY-106', 'Com365'], Team: 'Team Ahsan', Company: '', Platform: 'eBay', Site: ['UK (£)'], type: 'Dropship', va: 'Ahsan (VA)', vat: 'Not VAT registered', cf: {} }
 ];
-const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [], offRefunds: {}, returns: {}, people: {} };
+const K = { reg: null, acc: null, fields: [], iss: {}, stockIn: [], locks: {}, log: [], shots: {}, views: [], history: {}, prefs: { owner: 'Muhammad Aashiq (Owner)', role: 'Owner', viewAs: 'Owner' }, errors: [], expenses: [], skips: {}, removedSellers: [], offRefunds: {}, returns: {}, people: {}, matches: {} };
 const KEYS = Object.keys(K);
 async function loadAll() {
   persisted.ok = await DB.open();
@@ -1673,7 +1718,7 @@ V.audit = () => {
    ${(() => { const s = g.S[S.stepI != null && S.stepI < g.S.length ? S.stepI : Math.min(idx, g.S.length - 1)]; if (!s) return ''; return `<div class="stepbox"><div class="t" style="font-weight:700">${s.skipped ? 'Not available: ' : s.done ? '✓ Done: ' : 'Now: '}${esc(s.t)}</div><div class="note">${esc(s.why)}</div><ol>${s.how.map(h => `<li>${esc(h)}</li>`).join('')}</ol>${s.kind && !s.done ? `<div class="note">${typeof DRV !== 'undefined' && DRV.mcp ? `⟳ The tool is watching Google Drive for this file and takes it by itself. <b class="drvmsg">${esc(DRV.msg || '')}</b>` : 'Open your Audit Desk link and the tool takes it from Google Drive by itself.'}</div>` : ''}<div class="row">${s.kind && typeof DRV !== 'undefined' && DRV.mcp && !s.done ? `<button class="btn pri" data-act="driveNow">${DRV.busy ? 'Reading Drive…' : 'Check Drive now'}</button>` : ''}${s.kind ? `<button class="btn" data-act="pick" data-acct="${a.id}" data-month="${m}">${s.done ? 'Add a newer one by hand' : 'Add by hand instead'}</button>` : ''}${s.k === 'review' ? `<button class="btn pri" data-act="tab" data-t="issues">Show the issues</button>` : ''}${s.k === 'lock' && !lock && A && !A.error ? `<button class="btn pri" data-act="lock">Approve and lock</button>` : ''}${s.k === 'shot' ? `<button class="btn" data-act="shot">Type screenshot numbers</button>` : ''}${s.k === 'va' || s.k === 'txn' || s.k === 'ord' ? `<button class="btn" data-act="copyVA" data-acct="${a.id}" data-month="${m}">Copy instructions for VA</button>` : ''}${!s.done && s.k !== 'review' && s.k !== 'lock' ? `<button class="btn" data-act="stepSkip" data-k="${s.k}">Not available</button>` : ''}${s.skipped ? `<button class="btn" data-act="stepUnskip" data-k="${s.k}">I have it now</button>` : ''}${!s.need && !s.done ? `<span class="note">Optional. The audit works without it.</span>` : ''}</div></div>`; })()}</div>`;
   if (!A) return head + guide + `<div class="card"><p class="sub">No ${esc(a.Platform)} report for ${MLL(m)} yet. Follow step 1 above.</p></div>`;
   if (A.error) return head + guide + `<div class="card"><div class="check w">The audit stopped: ${esc(A.error)}</div><div class="row" style="margin-top:8px"><button class="btn" data-act="copyErr">Copy error for Claude</button></div></div>`;
-  const tabs = A.kind === 'ebay' ? [['summary', 'Summary'], ['pnl', 'Profit & loss'], ['cash', 'Cash & payouts'], ['sites', 'By site'], ['orders', 'Orders'], ['refunds', 'Refunds'], ['skus', 'SKU profit'], ['issues', 'Issues'], ['shot', 'Screenshot check'], ['vat', 'VAT'], ['files', 'Files']] : [['summary', 'Summary'], ['files', 'Files']];
+  const tabs = A.kind === 'ebay' ? [['summary', 'Summary'], ['pnl', 'Profit & loss'], ['cash', 'Cash & payouts'], ['match', 'Matches'], ['sites', 'By site'], ['orders', 'Orders'], ['refunds', 'Refunds'], ['skus', 'SKU profit'], ['issues', 'Issues'], ['shot', 'Screenshot check'], ['vat', 'VAT'], ['files', 'Files']] : [['summary', 'Summary'], ['match', 'Matches'], ['files', 'Files']];
   return head + guide + `<div class="tabs noprint" role="tablist">${tabs.map(([k, l]) => `<button class="tab ${S.tab === k ? 'on' : ''}" data-act="tab" data-t="${k}" role="tab">${l}</button>`).join('')}</div>` + (T[S.tab] || T.summary)(a, m, A);
 };
 const T = {};
@@ -3796,7 +3841,7 @@ const _doLock5 = doLock; doLock = async function (note) {
   await _doLock5(note);
   try {
     const k = S.acct + '|' + S.month, L = K.locks[k];
-    if (L && !L.meta) { L.meta = { engine: APPV, schema: 1, inputs: inp, inputsHash: await AD.sha256(JSON.stringify(inp.map(x => x.id + ':' + x.kind).sort())) }; await save('locks'); }
+    if (L && !L.meta) { L.meta = { engine: APPV, rules: AD.RULES_VERSION, recon: AD.RECON_VERSION, schema: 1, inputs: inp, inputsHash: await AD.sha256(JSON.stringify(inp.map(x => x.id + ':' + x.kind).sort())) }; await save('locks'); }
   } catch (e) { logErr(e, 'lock meta'); }
 };
 
@@ -3823,6 +3868,54 @@ Object.assign(ACT, {
     o.innerHTML = r.problems.length ? `<b>${r.problems.length} thing${r.problems.length > 1 ? 's' : ''} to look at</b> (${r.accounts} accounts, ${r.files} files, ${r.locked} locked months):<ul>${r.problems.slice(0, 40).map(p => `<li>${esc(p.where)}: ${esc(p.why)}${p.id ? ' (' + esc(p.id) + ')' : ''}</li>`).join('')}</ul>` : `✓ All good: ${r.accounts} accounts, ${r.files} files, ${r.locked} locked months.${r.withoutSha ? ` ${r.withoutSha} older files have no SHA-256 yet (they get one when they are added again).` : ''}`;
   }
 });
+
+// v2.5 — Matches: payouts ↔ bank / Wise statement, with manual match and unmatch (all changes are recorded)
+function stmRowsFor(a, m) {
+  // statements that cover the month (or have no period), and are not tied to another account; pictures with typed rows count too
+  const ok = p => (!p.acct || p.acct === '*' || p.acct === a.id) && (!m || !p.start || !p.end || (p.start <= m + '-31' && p.end >= m + '-01'));
+  return activeParts('statement').concat(activeParts('stmt_image').filter(p => p.rows && p.rows.length)).filter(ok).flatMap(p => (p.rows || []).map((r, i) => ({ id: String(p._file.id).slice(0, 6) + ':' + i, amount: r.amount, date: r.date, desc: r.desc || '', src: p._file.name })));
+}
+function payoutsFor(a, m, A) {
+  if (!A) return [];
+  if (A.kind === 'market') return (A.payoutList || []).map(x => ({ id: String(x.id), amount: x.amount, date: x.date, ref: x.id }));
+  const t = txnMerged(a.id, m); return t ? t.lines.filter(l => l.type === 'Payout').map(l => ({ id: String(l.payId || 'row' + (l.r + 1)), amount: -l.net, date: l.date, ref: l.payId })) : [];
+}
+function reconFor(a, m, A) {
+  const key = a.id + '|' + m, st = (K.matches || {})[key] || {}, P = payoutsFor(a, m, A), B = stmRowsFor(a, m).filter(r => r.amount > 0);
+  const res = AD.reconcile(P, B, { manual: (st.manual || []).map(x => ({ l: x.l, r: x.r })), forbid: st.forbid || [] });
+  return { key, P, B, res, st };
+}
+function matchTab(a, m, A) {
+  const { key, P, B, res, st } = reconFor(a, m, A);
+  if (!P.length) return `<div class="card"><h2>Matches ${help('Each payout from the platform should be found as money received in the bank / Wise.')}</h2><p class="note">No payouts in this month’s files yet, so there is nothing to match.</p></div>`;
+  const byL = new Map(); res.matches.forEach(x => x.l.forEach(l => byL.set(l, x))); const bk = id => B.find(b => b.id === id);
+  const free = B.filter(b => !res.matches.some(x => x.r.includes(b.id)));
+  const rows = P.map((p, i) => {
+    const x = byL.get(p.id); const rb = x ? x.r.map(bk).filter(Boolean) : [];
+    const state = !x ? ['bad', 'Not found'] : x.status === 'matched' ? ['ok', 'Matched'] : ['warn', 'Please confirm'];
+    const sug = !x ? res.suggestions.find(s => s.l === p.id) : null;
+    const opts = free.filter(b => !p.date || !b.date || Math.abs((Date.parse(b.date) - Date.parse(p.date)) / 864e5) <= 20).map(b => `<option value="${esc(b.id)}" ${sug && sug.r === b.id ? 'selected' : ''}>${esc(b.date || '')} · ${fmt(b.amount)} · ${esc(String(b.desc).slice(0, 30))}</option>`).join('');
+    return `<tr><td>${esc(p.date || '–')}</td><td class="num">${esc(p.id)}</td><td class="r">${money(p.amount)}</td><td><span class="pill p-${state[0]}">${state[1]}</span>${x ? ` <span class="note">${esc(x.method)}${x.diff ? ' · difference ' + fmt(x.diff) : ''}</span>` : ''}</td><td>${rb.length ? rb.map(b => `${esc(b.date || '')} · ${fmt(b.amount)} · ${esc(String(b.desc).slice(0, 34))} <span class="note">(${esc(b.src)})</span>`).join('<br>') : (opts ? `<select class="in" id="rcSel${i}"><option value="">Choose the bank line…</option>${opts}</select>` : '<span class="note">No bank line to choose from. Add the bank / Wise statement.</span>')}</td>
+      <td class="noprint">${x && x.status === 'review' ? `<button class="btn sm pri" data-act="rcConfirm" data-i="${i}">Yes, same</button> ` : ''}${x ? `<button class="btn sm" data-act="rcUn" data-i="${i}">Not a match</button>` : (opts ? `<button class="btn sm pri" data-act="rcSet" data-i="${i}">Match</button>` : '')}</td></tr>`;
+  }).join('');
+  const ev = (st.events || []).slice(-8).reverse();
+  return `<div class="card"><div class="row between"><h2>Matches: payouts and the bank ${help('A payout is only “proven” when the same money is found on a bank / Wise statement. Sure matches are automatic. Unsure ones wait for your tap. Nothing is forced. Every manual tap is recorded below.')}</h2><span class="note">${res.summary.matched} matched · ${res.summary.review} to confirm · ${res.summary.leftOnly} not found</span></div>
+  ${!B.length ? '<div class="check w">No bank / Wise statement for this account yet. Payouts cannot be proven without it. Add it in Files.</div>' : ''}
+  <div class="tw"><table><thead><tr><th>Payout date</th><th>Payout</th><th class="r">Amount</th><th>Status</th><th>Bank line</th><th class="noprint"></th></tr></thead><tbody>${rows}</tbody></table></div>
+  <div class="row noprint" style="margin-top:8px"><input class="in" id="rcWhy" placeholder="Reason or note for a manual change (optional)" style="flex:1;min-width:220px"></div></div>
+  ${ev.length ? `<div class="card"><h2>Recent match changes</h2><div class="list">${ev.map(e => `<div class="li"><div class="grow"><div class="t">${esc(e.action)} · ${esc(e.l)} ↔ ${esc(e.r || '')}</div><div class="d">${esc(e.by)} · ${esc(String(e.at).slice(0, 16).replace('T', ' '))}${e.why ? ' · ' + esc(e.why) : ''}</div></div></div>`).join('')}</div></div>` : ''}`;
+}
+T.match = matchTab;
+async function rcStore(fn) { const key = S.acct + '|' + S.month; const st = Object.assign({ manual: [], forbid: [], events: [] }, (K.matches || {})[key]); fn(st); K.matches = Object.assign({}, K.matches, { [key]: st }); await save('matches'); invalidate(); render(); }
+const rcWho = () => (typeof whoAmI === 'function' && whoAmI()) || K.prefs.owner || 'Owner';
+const rcEv = (st, action, l, r, why) => st.events.push({ at: new Date().toISOString(), by: rcWho(), action, l, r, why: why || '' });
+Object.assign(ACT, {
+  rcSet: async el => { const a = acctById(S.acct), A = getAudit(a.id, S.month), { P } = reconFor(a, S.month, A), p = P[+el.dataset.i], v = ($('#rcSel' + el.dataset.i) || {}).value, why = ($('#rcWhy') || {}).value || ''; if (!p || !v) { toast('Choose the bank line first.'); return; } await rcStore(st => { st.manual = st.manual.filter(x => x.l !== p.id).concat([{ l: p.id, r: v, by: rcWho(), at: new Date().toISOString(), why }]); st.forbid = st.forbid.filter(x => !(x.l === p.id && x.r === v)); rcEv(st, 'Matched by hand', p.id, v, why); }); toast('Matched.'); },
+  rcConfirm: async el => { const a = acctById(S.acct), A = getAudit(a.id, S.month), { P, res } = reconFor(a, S.month, A), p = P[+el.dataset.i], x = res.matches.find(m => m.l.includes(p.id)); if (!x) return; const why = ($('#rcWhy') || {}).value || ''; await rcStore(st => { x.l.forEach(l => x.r.forEach(r => { st.manual = st.manual.filter(y => !(y.l === l)).concat([{ l, r, by: rcWho(), at: new Date().toISOString(), why }]); })); rcEv(st, 'Confirmed', x.l.join('+'), x.r.join('+'), why); }); toast('Confirmed.'); },
+  rcUn: async el => { const a = acctById(S.acct), A = getAudit(a.id, S.month), { P, res } = reconFor(a, S.month, A), p = P[+el.dataset.i], x = res.matches.find(m => m.l.includes(p.id)); if (!x) return; const why = ($('#rcWhy') || {}).value || ''; await rcStore(st => { st.manual = st.manual.filter(y => !x.l.includes(y.l)); x.l.forEach(l => x.r.forEach(r => { if (!st.forbid.some(f => f.l === l && f.r === r)) st.forbid.push({ l, r }); })); rcEv(st, 'Unmatched', x.l.join('+'), x.r.join('+'), why); }); toast('Unmatched. It will not be matched to that bank line again.'); }
+});
+// the audit status uses the same matching
+(function () { const _as = auditStatus; auditStatus = function (a, m, A) { const st = _as(a, m, A); if (!st) return st; try { const rc = reconFor(a, m, A); const s = st.S.find(x => x.k === 'rec'); if (s && rc.P.length) { const proven = rc.res.summary.complete; const costOk = (A.nCostMissing || 0) === 0, cashOk = A.kind === 'ebay' ? Math.abs(A.cash.diff) <= 1 : true; s.ok = st.S[0].ok && st.S[1].ok && cashOk && costOk && proven; s.why = !cashOk ? `Cash is out by ${fmt(A.cash.diff)}.` : !costOk ? `${A.nCostMissing} orders have no cost.` : proven ? 'Cash, costs and payouts agree (payouts found in the bank).' : `${rc.res.summary.leftOnly + rc.res.summary.review} payouts are not proven in the bank yet (see Matches).`; let lv = 0; while (lv < st.S.length && st.S[lv].ok) lv++; st.level = lv; st.verified = st.S[0].ok && st.S[1].ok && st.S[2].ok && st.S[3].ok; } } catch (e) { } return st; }; })();
 
 /* Audit Desk — links you can right-click (“Open link in new tab / window”), and small fixes */
 'use strict';
