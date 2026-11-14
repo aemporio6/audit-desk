@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '3.2.0';
+const APPV = '3.2.1';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -2854,7 +2854,7 @@ async function ocrOne(rec) {
     if (rec.type === 'image') {
       if (!rec.img || /^data:image\/(heic|heif)/i.test(rec.img)) { rec.ocr = { at: new Date().toISOString(), skip: 'format' }; return; }
       const w = await ocrWorker(); if (!w) return;
-      text = (await w.recognize(rec.img)).data.text;
+      text = (await w.recognize(await sharpImg(rec.img))).data.text;
     } else if (rec.type === 'pdf') {
       if (!rec.raw) { rec.ocr = { at: new Date().toISOString(), skip: 'no copy' }; return; }
       text = await pdfText(rec.raw);
@@ -4429,7 +4429,7 @@ function shotTable(a, m, A) {
   let L = []; try { L = shotCompare(A, s); } catch (e) { return ''; }
   if (!L.length) return '';
   const f = r => r.isQty ? String(r.theirs / 100) : fmt(r.theirs), o = r => r.ours == null ? '—' : r.isQty ? String(r.ours / 100) : fmt(r.ours);
-  return `<div class="card"><h2>Seller Hub screenshot against the tool${L.many ? ` · ${esc(L.from)} to ${esc(L.to)}` : ''}</h2>${L.many ? '<p class="note">This screenshot covers several months, so it is compared with the total of all those months.</p>' : ''}<div class="tw"><table><thead><tr><th>Line</th><th>Screenshot</th><th>Tool</th><th>Difference</th></tr></thead><tbody>${L.map(r => `<tr><td>${esc(r.k)}</td><td class="num">${f(r)}</td><td class="num">${o(r)}</td><td class="num">${r.d == null ? '—' : r.isQty ? String(r.d / 100) : fmt(r.d)} ${r.bad ? pill('check', 'bad') : ''}</td></tr>`).join('')}</tbody></table></div>${(() => { const sr = L.find(r => r.k.startsWith('Total sales')); return sr && sr.bad && sr.d > 0 && L.refunds ? `<p class="note">Sales differ by ${fmt(sr.d)}. Refunds in these months are ${fmt(L.refunds)}; after them ${fmt(Math.abs(sr.d - L.refunds))} is left to check.</p>` : ''; })()}</div>`;
+  return `<div class="card"><h2>Seller Hub screenshot against the tool${L.many ? ` · ${esc(L.from)} to ${esc(L.to)}` : ''}</h2>${L.many ? '<p class="note">This screenshot covers several months, so it is compared with the total of all those months.</p>' : ''}<div class="tw"><table><thead><tr><th>Line</th><th>Screenshot</th><th>Tool</th><th>Difference</th></tr></thead><tbody>${L.map(r => `<tr><td>${esc(r.k)}</td><td class="num">${f(r)}</td><td class="num">${o(r)}</td><td class="num">${r.d == null ? '—' : r.isQty ? String(r.d / 100) : fmt(r.d)} ${r.bad ? pill('check', 'bad') : ''}</td></tr>`).join('')}</tbody></table></div>${(() => { const sr = L.find(r => r.k.startsWith('Total sales')); if (!sr || !sr.bad || !(sr.d > 0)) return ''; const left = sr.d - (L.refunds || 0) - (L.claims || 0); return `<p class="note">Sales differ by ${fmt(sr.d)}. Refunds in these months are ${fmt(L.refunds || 0)} and claims ${fmt(L.claims || 0)}; after them ${fmt(left)} is left.${L.heldN && Math.abs(L.heldG - left) < 100 ? ` Orders still held by eBay: ${L.heldN} orders, ${fmt(L.heldG)}; eBay may not count them yet, which would explain most of it.` : ' Check the orders of this period against Seller Hub.'}</p>`; })()}</div>`;
 }
 const _tsum12 = T.summary;
 T.summary = (a, m, A) => _tsum12(a, m, A) + bridgeCard(a, m, A) + shotTable(a, m, A) + sourceCard(a, m) + openCard(a, m);
@@ -4442,10 +4442,11 @@ SHOT_FIELDS.push(['net', 'Net sales (after selling costs)']);
 function shotSpans(sh, A) { return !!(sh && sh.from && sh.to && A && A.start && sh.from <= A.start && sh.to >= A.end && sh.from.slice(8) === '01' && sh.to.slice(0, 7) >= A.end.slice(0, 7)); }
 function shotAcctOf(s) { const k = Object.keys(K.shots).find(x => K.shots[x] === s); return k ? k.split('|')[0] : null; }
 function aggAudit(acct, from, to) {
-  const A = { sums: {}, start: from, end: to, orMatch: { qty: 0, totals: { all: 0 } }, kind: 'ebay' }; let n = 0, m = from.slice(0, 7);
+  const A = { sums: {}, start: from, end: to, orMatch: { qty: 0, totals: { all: 0 } }, kind: 'ebay', heldG: 0, heldN: 0 }; let n = 0, m = from.slice(0, 7);
   for (let g = 0; g < 24 && m <= to.slice(0, 7); g++, m = AD.addMonths(m, 1)) {
     const X = getAudit(acct, m); if (!X || !X.sums) continue; n++;
     Object.entries(X.sums).forEach(([k, v]) => { if (typeof v === 'number') A.sums[k] = (A.sums[k] || 0) + v; });
+    (X.orders || []).forEach(o => { if (o.held > 0 && o.gross > 0) { A.heldG += o.gross; A.heldN++; } });
     if (X.orMatch) { A.orMatch.qty += X.orMatch.qty || 0; A.orMatch.totals.all += Object.values(X.orMatch.totals || {}).reduce((x, y) => x + y, 0); }
   }
   return n ? A : null;
@@ -4457,7 +4458,7 @@ shotCompare = function (A, s) {
   const rows = _shotCompare12(B, s).filter(r => r.k !== 'Net sales (after selling costs)');
   const z = k => (B.sums || {})[k] || 0;
   if (s.net !== undefined && s.net !== '' && s.net !== null && true) { const th = Math.round(+s.net * 100), d = z('net') - th; rows.push({ k: 'Net sales (after selling costs)', theirs: th, ours: z('net'), d, bad: Math.abs(d) > 100 }); }
-  rows.many = many; rows.from = many ? s.from : null; rows.to = many ? s.to : null; rows.refunds = -z('refunds');
+  rows.many = many; rows.from = many ? s.from : null; rows.to = many ? s.to : null; rows.refunds = -z('refunds'); rows.claims = -z('claims'); rows.heldG = B.heldG || 0; rows.heldN = B.heldN || 0;
   return rows;
 };
 // ---- picture reader: tolerant of the usual mistakes (missing decimal point, £ read as 5, labels cut) ----
@@ -4472,18 +4473,18 @@ const decMoney = l => (String(l).replace(/\d+(?:\.\d+)?\s*%/g, ' ').match(/\d{1,
 ocrShot = function (text) {
   const L = String(text || '').split(/\n+/).map(x => x.trim()).filter(Boolean), out = {};
   // summary picture: three labels, then three amounts under them
-  const hi = L.findIndex(l => /(sales|sles|soles)/i.test(l) && /(cost)/i.test(l));
+  const hi = L.findIndex(l => decMoney(l).length >= 3);
   if (hi >= 0) {
-    const v = decMoney(L[hi + 1] || '');
+    const v = decMoney(L[hi] || '');
     if (v.length >= 3) { out.sales = v[0]; out.costs = v[1]; out.net = v[2]; if (Math.abs(out.sales - out.costs - out.net) > 0.02) out.costs = Math.round((out.sales - out.net) * 100) / 100; }
-    const q = (L[hi + 2] || '').match(/^\D{0,3}(\d{1,6})\b/); const qi = L.findIndex(l => /quant/i.test(l)); const q2 = qi >= 0 ? (L[qi + 1] || '').match(/^\D{0,3}(\d{1,6})\b/) : null; if (q2) out.qty = +q2[1];
+    const q2 = L.slice(hi + 1).map(l => l.match(/^\D{0,2}(\d{1,6})\s+[£$]\s*\d/)).find(Boolean); if (q2) out.qty = +q2[1];
   }
   const per = periodIn(String(text || '')); if (per) { out.from = per.from; out.to = per.to; }
   // breakdown picture: each line has an amount and its share of the total, which proves the amount
   const all = decMoney(L.join('\n')); const total = (() => { const ti = L.findIndex(l => /selling costs/i.test(l) && decMoney(l).length); return ti >= 0 ? decMoney(L[ti])[0] : (L.some(l => /breakdown/i.test(l)) && all.length ? all[0] : null); })();
   if (total && L.some(l => /breakdown|percent of selling/i.test(l))) {
     out.costs = out.costs || total;
-    const R = { ins: /insert|nsertion/i, fvf: /final val|valve|value fee/i, reg: /regul|reguiat/i, cred: /fee credit|transaction fee/i, post: /postage lab/i, sub: /subscr|supscr/i, ads: /^\W*(ad|promoted)\W*fees|promoted/i };
+    const R = { ins: /insert|nsertion/i, fvf: /final val|valve|value fee/i, reg: /regul|reguiat/i, cred: /fee credit|transaction fee/i, post: /postage lab/i, sub: /subscr|ubscri|supscr|level fees/i, ads: /^\W*ad\s+\w?ees|^\W*ad\s*fees|promoted/i };
     Object.entries(R).forEach(([k, re]) => {
       const line = L.find(l => re.test(l)); if (!line) return;
       const mm = line.match(re), after = line.slice(mm.index + mm[0].length);
@@ -4496,6 +4497,14 @@ ocrShot = function (text) {
       if (best && best.e <= Math.max(0.6, total * 0.0012)) out[k] = k === 'cred' ? -Math.abs(best.a) : best.a;
     });
   }
+  // the eBay-fees line adds up: insertion + final value + regulatory + ads + credits + account-level = eBay fees. One missing part is worked out from it.
+  { const el = L.find(l => /ebay\s*\w*ees/i.test(l)); const ef = el ? decMoney(el.replace(/^.*?ees/i, ' '))[0] : null;
+    if (ef && out.costs) {
+      if (out.post === undefined && out.costs - ef > 0) out.post = Math.round((out.costs - ef) * 100) / 100;
+      const keys = ['ins', 'fvf', 'reg', 'ads', 'cred', 'sub'], have = keys.filter(k => out[k] !== undefined), miss = keys.filter(k => out[k] === undefined);
+      const sum = have.reduce((t, k) => t + out[k], 0);
+      if (miss.length === 1) { const v = Math.round((ef - sum) * 100) / 100; if (miss[0] === 'cred' ? v < 0 : v > 0) out[miss[0]] = v; }
+    } }
   return Object.keys(out).length ? out : _ocrShot12(text);
 };
 
@@ -4551,6 +4560,16 @@ function reviewModel() {
     R.rows.push({ a, m, A, sold: sold.length, nOr: om.inOr, nTxn: om.inTxn, onlyTxn, onlyOr, noCost, src, ae, stm, shot: !!sh, F, bad, warn, open, verdict: bad ? 'mistakes' : warn ? 'check' : 'clean' });
     R.accts.add(a.id); R.months.add(m);
   });
+  K.acc.filter(a => accPass(a) && a.Platform && a.Platform !== 'eBay').forEach(a => auditMonths().filter(monthPass).forEach(m => {
+    const A = getAudit(a.id, m); if (!A || A.kind !== 'market' || !A.sums || !(A.sums.orders > 0)) return;
+    const O = A.orders || [], sold = O.filter(o => o.gross > 0), F = [], noCost = sold.filter(o => o.cost == null || o.cost === '');
+    if (noCost.length) F.push({ s: 'bad', t: `${noCost.length} order${noCost.length > 1 ? 's have' : ' has'} no cost: ${idsTxt(noCost)}.` });
+    if (A.sums.refunds) F.push({ s: 'info', t: `Refunds in the month: ${fmt(-A.sums.refunds)}.` });
+    let stm = false; try { const t = txnMerged(a.id, m); stm = t ? stmtsFor(t, m).length > 0 : false; } catch (e) { }
+    F.push({ s: 'warn', t: `${a.Platform}: payouts are not matched to a bank statement yet.` });
+    const bad = F.filter(f => f.s === 'bad').length, warn = F.filter(f => f.s === 'warn').length;
+    R.rows.push({ a, m, A, sold: sold.length, nOr: A.sums.orders, nTxn: null, onlyTxn: [], onlyOr: [], noCost, src: {}, ae: { n: null, used: 0, extra: [] }, stm, shot: false, F, bad, warn, open: 0, verdict: bad ? 'mistakes' : warn ? 'check' : 'clean' }); R.accts.add(a.id); R.months.add(m);
+  }));
   activeParts().forEach(p => { if (p.monthGuess || p.waiting || (p.check && p.placedBy === 'best guess')) R.guess.push({ f: p._file.name, kind: p.label || KIND_LABEL[p.kind] || p.kind, acct: p.acct, month: p.month, why: p.waiting ? 'waiting for an account' : p.monthGuess ? 'month is a guess' : 'placed by best guess' }); });
   R.rows.sort((x, y) => x.a.name.localeCompare(y.a.name) || y.m.localeCompare(x.m));
   return R;
@@ -4579,5 +4598,16 @@ Object.assign(HELPT, { rvOpen: 'Opens this account and month.', rvCopy: 'Copies 
 // after a Drive link is read, show the split at once
 const _linkGo12 = linkGo;
 linkGo = async function () { const n0 = FILES.length; await _linkGo12.apply(this, arguments); try { if (FILES.length > n0 || S.results.length) { go('review'); toast('Split by account and month is below. Mistakes and gaps are written out.'); } } catch (e) { } };
+
+// bigger, grey and contrasty picture for the reader: small or blurry screenshots are read far more exactly
+async function sharpImg(src) {
+  try {
+    const im = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = src; });
+    const k = Math.max(1, Math.min(3, 2400 / Math.max(1, im.width))); const c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+    const x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height);
+    const d = x.getImageData(0, 0, c.width, c.height), a = d.data; for (let i = 0; i < a.length; i += 4) { let g = (a[i] * 0.3 + a[i + 1] * 0.59 + a[i + 2] * 0.11); g = Math.max(0, Math.min(255, (g - 128) * 1.5 + 128 + 25)); a[i] = a[i + 1] = a[i + 2] = g; }
+    x.putImageData(d, 0, 0); return c;
+  } catch (e) { return src; }
+}
 </script>
 </body></html>
