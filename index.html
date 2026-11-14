@@ -764,7 +764,7 @@ AD.auditEbay = function (txn, orders, ctx) {
   }
   // costs + per-order profit
   const C = ctx.costs || { byOrder: new Map(), bySku: new Map(), hasVA: false };
-  let cogs = 0, costKnown = 0, costMissing = 0, nCostMissing = 0;
+  let aeExportRef = 0, cogs = 0, costKnown = 0, costMissing = 0, nCostMissing = 0;
   const OL = [];
   ordersInTxn.forEach(o => {
     const fullyRefunded = o.sold && (o.refund + o.claim) <= -o.gross + 1 && o.gross > 0;
@@ -772,7 +772,7 @@ AD.auditEbay = function (txn, orders, ctx) {
     let cost = null, src = '', ae = '', flags = [];
     if (va && va.cost > 0) { cost = va.cost; src = 'VA sheet'; ae = va.ae; if (va.conflict) flags.push('Two different costs in VA sheet'); if (ctx.ae && ctx.ae.length && o.pc) { const nm = norm(o.buyer); const c = ctx.ae.filter(x => !x._used && x.pc === o.pc && within(x.date, o.date, -1, 10)); const m = c.find(x => (va.ae && x.ae === va.ae) || (nm && norm(x.buyer) === nm)) || (c.length === 1 ? c[0] : null); if (m) { m._used = true; if (!ae) ae = m.ae; if (Math.abs(m.amount - cost) > 5) flags.push('VA cost differs from AliExpress'); } } }
     else if (o.skus.length && o.skus.every(s => C.bySku.has(s.sku))) { cost = o.skus.reduce((a, s) => a + C.bySku.get(s.sku).cost * (s.qty || 1), 0); src = 'Stock cost list'; }
-    else if (o.sold && ctx.ae && ctx.ae.length && o.pc) { const nm = norm(o.buyer); const c = ctx.ae.filter(x => !x._used && x.pc === o.pc && within(x.date, o.date, -1, 10)); const m = c.find(x => nm && norm(x.buyer) === nm) || (c.length === 1 ? c[0] : null) || c.find(x => nm && norm(x.buyer).slice(0, 4) === nm.slice(0, 4)); if (m) { m._used = true; cost = m.amount; src = 'AliExpress export'; ae = m.ae; if (/refund|closed/i.test(m.refund + ' ' + m.status) && !/none/i.test(m.refund)) flags.push('AliExpress refund to claim'); } }
+    else if (o.sold && ctx.ae && ctx.ae.length && o.pc) { const nm = norm(o.buyer); const c = ctx.ae.filter(x => !x._used && x.pc === o.pc && within(x.date, o.date, -1, 10)); const m = c.find(x => nm && norm(x.buyer) === nm) || (c.length === 1 ? c[0] : null) || c.find(x => nm && norm(x.buyer).slice(0, 4) === nm.slice(0, 4)); if (m) { m._used = true; cost = m.amount; src = 'AliExpress export'; ae = m.ae; const rm = String(m.refund || '').match(/(?:refund completed|full refund issued|refunded)\D{0,12}£\s*([\d,]+(?:\.\d+)?)/i); if (rm) { aeExportRef += Math.round(parseFloat(rm[1].replace(/,/g, '')) * 100); flags.push('AliExpress refund received'); } else if (/refund|closed/i.test(m.refund + ' ' + m.status) && !/none/i.test(m.refund)) flags.push('AliExpress refund to claim'); } }
     if (o.sold) {
       if (cost !== null) { cogs += cost; costKnown++; }
       else if (!fullyRefunded) { nCostMissing++; flags.push('No cost found'); }
@@ -821,7 +821,7 @@ AD.auditEbay = function (txn, orders, ctx) {
     const inM = aeRefunds.filter(r => r.date && txn.month && r.date.slice(0, 7) === txn.month);
     aeMatch = { tried, hit, ambiguous, fxDiff, refunds: aeRefunds.reduce((a, r) => a + r.amount, 0), nRefunds: aeRefunds.length, refundsInMonth: inM.reduce((a, r) => a + r.amount, 0), nRefundsInMonth: inM.length };
   }
-  const supplierRefunds = aeMatch && ctx.useSupplierRefunds !== false ? aeMatch.refundsInMonth || 0 : 0;
+  const supplierRefunds = ctx.useSupplierRefunds === false ? 0 : (aeMatch ? aeMatch.refundsInMonth || 0 : aeExportRef);
   const profit = S.net - cogs + supplierRefunds;
   const health = { heldPct: S.gross ? Math.round(1000 * heldNo / S.gross) / 10 : 0, inad: z('inad'), below: z('below'), refundRate: S.gross ? Math.round(-1000 * (z('refunds') + z('claims')) / S.gross) / 10 : 0, adsPct: S.gross ? Math.round(1000 * z('ads') / S.gross) / 10 : 0 };
   return {
@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '3.3.0';
+const APPV = '3.3.1';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
