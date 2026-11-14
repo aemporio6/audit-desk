@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '3.4.1';
+const APPV = '3.4.2';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -4701,7 +4701,7 @@ function saleView(L) {
   const orphan = {}; by.forEach((x, k) => { if (!x.sm) orphan[k] = x.net; });
   return { out, orphan };
 }
-function reportAcct(a) {
+function reportAcct(a, word) {
   const L = acctMonths(a); if (!L.length) return null;
   const P = v => fmt(v), N = v => (v < 0 ? '-' : '') + '£' + (Math.abs(v) / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const ms = L.map(x => x.m), z = (A, k) => (A.sums[k] || 0);
@@ -4768,9 +4768,9 @@ function reportAcct(a) {
   const tile = (k, v) => `<div><span>${k}</span><b>${v}</b></div>`;
   const cogsNet = -T.cogs - T.aeRef;
   const shotCmp = '';
-  return `<div class="rptwm">${LOGO_SVG}</div><div class="rpthead"><span class="lg">${LOGO_SVG}</span><div><h1>Full audit · ${esc(a.name)}${a.Seller ? ' (eBay seller ' + esc(a.Seller) + ')' : ''} · ${esc(first === last ? first : first.split(' ')[0] + ' to ' + last)}</h1><div class="sm">Prepared ${esc(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))} from the original files (${esc(srcs.join(', '))}).</div></div></div>
+  return `${word ? '' : `<div class="rptwm">${LOGO_SVG}</div>`}<div class="rpthead">${word ? (LOGO_PNG ? `<img src="${LOGO_PNG}" width="46" height="46" style="vertical-align:middle">` : '') : `<span class="lg">${LOGO_SVG}</span>`}<div><h1>Full audit · ${esc(a.name)}${a.Seller ? ' (eBay seller ' + esc(a.Seller) + ')' : ''} · ${esc(first === last ? first : first.split(' ')[0] + ' to ' + last)}</h1><div class="sm">Prepared ${esc(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))} from the original files (${esc(srcs.join(', '))}).</div></div></div>
   <div class="box ${partial ? 'warn' : 'ok'}"><b>Result: ${esc(verdict)}</b></div>
-  <div class="tiles">${tile('Sales (buyers paid)', N(T.gross))}${tile('eBay net (excl. hold)', N(T.net))}${tile('Cost of goods', N(cogsNet))}${tile('Profit so far', N(T.profit))}${tile('Orders · units', T.orders + ' · ' + T.units)}</div>
+  ${(() => { const TL = [['Sales (buyers paid)', N(T.gross)], ['eBay net (excl. hold)', N(T.net)], ['Cost of goods', N(cogsNet)], ['Profit so far', N(T.profit)], ['Orders · units', T.orders + ' · ' + T.units]]; return word ? '<table style="width:100%;border-collapse:separate;border-spacing:4px"><tr>' + TL.map(x => `<td style="border:1px solid #ccc;padding:6px"><span style="font-size:8pt;color:#555">${x[0]}</span><br><b style="font-size:13pt">${x[1]}</b></td>`).join('') + '</tr></table>' : '<div class="tiles">' + TL.map(x => tile(x[0], x[1])).join('') + '</div>'; })()}
   ${nNo || open.length ? `<p class="sm">Profit is not final:${nNo ? ` ${nNo} sold order${nNo > 1 ? 's have' : ' has'} no cost yet (section 5)` : ''}${nNo && open.length ? ' and' : ''}${open.length ? ` ${N(-holdT)} of ${open.length === 1 ? 'one order is' : open.length + ' orders is'} still held by eBay` : ''}.</p>` : ''}
   <h2>1. Month by month</h2><table><thead><tr><th></th>${ms.map(m => `<th class="r">${esc(MLL(m).split(' ')[0])}</th>`).join('')}${C.length > 1 ? '<th class="r">Total</th>' : ''}</tr></thead><tbody>${mt}</tbody></table>
   ${why ? `<div class="box">${why}</div>` : ''}
@@ -4784,5 +4784,40 @@ function reportAcct(a) {
 }
 
 { const st = document.createElement('style'); st.textContent = `@page{size:A4;margin:12mm 10mm}@media print{body.rptmode #rpt{position:relative;font:11px/1.4 Calibri,Carlito,Arial,sans-serif;color:#14202e}.rptwm{position:fixed;left:0;right:0;top:30%;height:46vh;display:flex;justify-content:center;opacity:.1;z-index:0;pointer-events:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}.rptwm svg{height:100%;width:auto}#rpt>*:not(.rptwm){position:relative;z-index:1}#rpt .rpthead{display:flex;gap:10px;align-items:center;margin-bottom:6px;border:0;padding:0}#rpt .rpthead .lg{width:38px;height:38px;flex:none}#rpt .rpthead .lg svg{width:100%;height:100%}#rpt h1{font-size:20px;color:#173f78;margin:0;font-weight:700}#rpt h2{font-size:14px;color:#173f78;border-bottom:1px solid #999;margin:16px 0 6px;padding:0 0 2px;break-after:avoid;font-weight:700}#rpt table{border-collapse:collapse;width:100%;margin:4px 0;font-size:11px}#rpt td,#rpt th{border-bottom:1px solid #ddd;padding:3px 5px;text-align:left;vertical-align:top}#rpt th{background:#eef2f8}#rpt td.r,#rpt th.r{text-align:right}#rpt tr.b td{font-weight:700;background:#f6f8fb}#rpt .box{border:1px solid #bbb;border-radius:6px;padding:8px 10px;margin:8px 0}#rpt .ok{background:#e6f4ea}#rpt .warn{background:#fff4d6}#rpt .bad{background:#fde7e7}#rpt ul{margin:4px 0 4px 16px;padding:0}#rpt .tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}#rpt .tiles div{border:1px solid #ccc;border-radius:6px;padding:6px}#rpt .tiles span{display:block;font-size:9px;color:#555}#rpt .tiles b{font-size:15px}#rpt .sm{font-size:9.5px;color:#555;margin:4px 0}#rpt tr{break-inside:avoid}}`; document.head.appendChild(st); }
+
+/* v3.4.2 — every PDF / print / Word of an audit is ONLY the audit report (never the screen). */
+const RPT_CSS = `@page{size:A4;margin:12mm 10mm}html,body{background:#fff}body{font:11px/1.4 Calibri,Carlito,Arial,sans-serif;color:#14202e;margin:0;padding:0}.rptwm{position:fixed;left:0;right:0;top:30%;height:46vh;display:flex;justify-content:center;opacity:.1;z-index:0;pointer-events:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}.rptwm svg{height:100%;width:auto}.rptbody>*:not(.rptwm){position:relative;z-index:1}.rpthead{display:flex;gap:10px;align-items:center;margin-bottom:6px}.rpthead .lg{width:38px;height:38px;flex:none}.rpthead .lg svg{width:100%;height:100%}h1{font-size:20px;color:#173f78;margin:0;font-weight:700}h2{font-size:14px;color:#173f78;border-bottom:1px solid #999;margin:16px 0 6px;padding:0 0 2px;break-after:avoid;font-weight:700}table{border-collapse:collapse;width:100%;margin:4px 0;font-size:11px}td,th{border-bottom:1px solid #ddd;padding:3px 5px;text-align:left;vertical-align:top}th{background:#eef2f8}td.r,th.r{text-align:right}tr.b td{font-weight:700;background:#f6f8fb}.box{border:1px solid #bbb;border-radius:6px;padding:8px 10px;margin:8px 0}.ok{background:#e6f4ea}.warn{background:#fff4d6}.bad{background:#fde7e7}ul{margin:4px 0 4px 16px;padding:0}.tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}.tiles div{border:1px solid #ccc;border-radius:6px;padding:6px}.tiles span{display:block;font-size:9px;color:#555}.tiles b{font-size:15px}.sm{font-size:9.5px;color:#555;margin:4px 0}tr{break-inside:avoid}.rptv{padding:8px 10px;border-radius:6px;border:1px solid #ccc;margin:6px 0}.rptv.ok{background:#e6f4ea}.rptv.bad{background:#fde7e7}.rptv.warn{background:#fff4d6}.rptsteps{list-style:none;padding-left:0}.rpttitle{font-size:17px;font-weight:700}.rpttiles{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}.rpttiles>div{border:1px solid #ccc;border-radius:6px;padding:6px}h2.rh{font-size:14px}.rptfoot{font-size:9.5px;color:#555}`;
+function reportCtx() {
+  const ok = id => { const a = acctById(id); return a && a.Platform !== undefined || a; };
+  let id = S.acct, m = S.month;
+  if (!(id && acctById(id) && m && getAudit(id, m) && getAudit(id, m).sums)) { const f = allAudits().find(x => x.A && x.A.sums); if (!f) return null; id = f.a.id; m = f.m; }
+  return { a: acctById(id), m, A: getAudit(id, m) };
+}
+function reportBuild(word) {
+  const c = reportCtx(); if (!c) return null; let h = null;
+  try { h = c.A.kind === 'ebay' ? reportAcct(c.a, word) : null; } catch (e) { logErr(e, 'report'); h = null; }
+  if (!h) { try { h = reportHTML(c.a, c.m, c.A); } catch (e) { logErr(e, 'report2'); return null; } }
+  return { html: h, a: c.a, m: c.m };
+}
+function reportDoc(word) {
+  const r = reportBuild(word); if (!r) return null;
+  const title = esc('Audit report · ' + r.a.name);
+  return { r, doc: `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>${RPT_CSS}</style></head><body><div class="rptbody">${r.html}</div></body></html>` };
+}
+function printReportFrame(doc) {
+  const old = document.getElementById('rptframe'); if (old) old.remove();
+  const f = document.createElement('iframe'); f.id = 'rptframe'; f.setAttribute('aria-hidden', 'true'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  document.body.appendChild(f); const w = f.contentWindow; w.document.open(); w.document.write(doc); w.document.close();
+  const go = () => { try { w.focus(); w.print(); } catch (e) { logErr(e, 'frameprint'); } setTimeout(() => { try { f.remove(); } catch (e) { } }, 120000); };
+  setTimeout(go, 400); return true;
+}
+ACT.print = () => { const d = reportDoc(false); if (!d) { toast('Open an account and month with files first, then press PDF / Print.'); return; } printReportFrame(d.doc); };
+// plain Ctrl+P / phone "Print": the page itself becomes the report
+rptOn = function () { const r = reportBuild(false); if (!r) return false; let el = $('#rpt'); if (!el) { el = document.createElement('div'); el.id = 'rpt'; document.body.appendChild(el); } el.innerHTML = r.html; document.body.classList.add('rptmode'); return true; };
+ACT.word = () => {
+  const d = reportDoc(true); if (!d) { toast('Open an account and month with files first, then press Word.'); return; }
+  const doc = d.doc.replace('<html>', '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">');
+  saveFile(`${d.r.a.name} ${d.r.m} Audit report.doc`, new Blob(['﻿' + doc], { type: 'application/msword' }));
+};
 </script>
 </body></html>
