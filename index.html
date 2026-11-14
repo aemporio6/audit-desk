@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '3.2.1';
+const APPV = '3.3.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -4584,17 +4584,17 @@ V.review = () => {
   const nb = R.rows.filter(r => r.verdict === 'mistakes').length, nc = R.rows.filter(r => r.verdict === 'check').length, ok = R.rows.length - nb - nc;
   const money = (v) => fmt(v);
   const head = `<div class="grid"><div class="card tile"><div class="k">Accounts · months</div><div class="v">${R.accts.size} · ${R.rows.length}</div></div><div class="card tile"><div class="k">No mistake found</div><div class="v">${ok}</div></div><div class="card tile"><div class="k">To check</div><div class="v">${nc}</div></div><div class="card tile"><div class="k">Mistakes</div><div class="v" style="color:var(--bad,#b3261e)">${nb}</div></div></div>`;
-  const tbl = `<div class="card"><h2>Month by month ${help('One row per account and month. Counts come from each report separately; where they should agree and do not, the row is marked and the reason is written below.')}</h2><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th>Orders report</th><th>Transaction report</th><th>Sold</th><th>With cost</th><th>AliExpress in month / used</th><th>Sales</th><th>eBay net</th><th>Profit</th><th>Result</th></tr></thead><tbody>${R.rows.map(r => `<tr><td>${esc(r.a.name)}</td><td>${esc(MLL(r.m))}</td><td class="num">${r.nOr == null ? '—' : r.nOr}</td><td class="num">${r.nTxn == null ? '—' : r.nTxn}</td><td class="num">${r.sold}</td><td class="num">${r.sold - r.noCost.length}${r.sold - r.noCost.length < r.sold ? '' : ''}</td><td class="num">${r.ae.n == null ? (r.ae.used ? r.ae.used + ' used' : '—') : r.ae.n + ' / ' + r.ae.used}</td><td class="num">${money(r.A.sums.gross)}</td><td class="num">${money(r.A.sums.net)}</td><td class="num">${r.A.nCostMissing ? 'not final' : money(r.A.profit)}</td><td>${pill(r.verdict === 'clean' ? 'No mistake found' : r.verdict === 'check' ? 'To check' : 'Mistakes', r.verdict === 'clean' ? 'ok' : r.verdict === 'check' ? 'warn' : 'bad')} <button class="btn sm" data-act="rvOpen" data-a="${esc(r.a.id)}" data-m="${esc(r.m)}">Open</button></td></tr>`).join('')}</tbody></table></div></div>`;
+  const tbl = `<div class="card"><h2>Month by month ${help('One row per account and month. Counts come from each report separately; where they should agree and do not, the row is marked and the reason is written below.')}</h2><div class="tw"><table><thead><tr><th>Account</th><th>Month</th><th>Orders report</th><th>Transaction report</th><th>Sold</th><th>With cost</th><th>AliExpress in month / used</th><th>Sales</th><th>eBay net</th><th>Profit</th><th>Result</th></tr></thead><tbody>${R.rows.map(r => `<tr><td>${esc(r.a.name)}</td><td>${esc(MLL(r.m))}</td><td class="num">${r.nOr == null ? '—' : r.nOr}</td><td class="num">${r.nTxn == null ? '—' : r.nTxn}</td><td class="num">${r.sold}</td><td class="num">${r.sold - r.noCost.length}${r.sold - r.noCost.length < r.sold ? '' : ''}</td><td class="num">${r.ae.n == null ? (r.ae.used ? r.ae.used + ' used' : '—') : r.ae.n + ' / ' + r.ae.used}</td><td class="num">${money(r.A.sums.gross)}</td><td class="num">${money(r.A.sums.net)}</td><td class="num">${r.A.nCostMissing ? 'not final' : money(r.A.profit)}</td><td>${pill(r.verdict === 'clean' ? 'No mistake found' : r.verdict === 'check' ? 'To check' : 'Mistakes', r.verdict === 'clean' ? 'ok' : r.verdict === 'check' ? 'warn' : 'bad')} <button class="btn sm" data-act="rvOpen" data-a="${esc(r.a.id)}" data-m="${esc(r.m)}">Open</button> <button class="btn sm" data-act="rvPdf" data-a="${esc(r.a.id)}" data-m="${esc(r.m)}">Report PDF</button></td></tr>`).join('')}</tbody></table></div></div>`;
   const list = `<div class="card"><h2>Mistakes and gaps, written out</h2>${R.rows.filter(r => r.F.some(f => f.s !== 'info')).map(r => `<h3>${esc(r.a.name)} · ${esc(MLL(r.m))}</h3><div class="list">${r.F.map(f => `<div class="li"><div class="ic i-${f.s === 'bad' ? 'bad' : f.s === 'warn' ? 'warn' : 'ok'}">${f.s === 'bad' ? '!' : f.s === 'warn' ? '?' : 'i'}</div><div class="grow">${f.t}</div></div>`).join('')}</div>`).join('') || '<p class="note">No mistake or gap found.</p>'}</div>`;
   const aeX = R.ae.extra.length ? `<div class="card"><h2>AliExpress orders that match no eBay order (${R.ae.extra.length})</h2><p class="note">Of ${R.ae.total} AliExpress orders, ${R.ae.usedN} are used as the cost of an eBay order. These ${R.ae.extra.length} are not: bought for another account or month, or the eBay sale is not in the files yet.${R.ae.dups ? ` ${R.ae.dups} repeated AliExpress rows were ignored.` : ''}</p><div class="tw"><table><thead><tr><th>Date</th><th>AliExpress order</th><th>Buyer</th><th>Postcode</th><th>Amount</th><th>Status</th></tr></thead><tbody>${R.ae.extra.slice().sort((x, y) => String(x.date).localeCompare(String(y.date))).slice(0, 60).map(r => `<tr><td>${esc(r.date || '')}</td><td>${esc(r.ae)}</td><td>${esc(r.buyer || '')}</td><td>${esc(r.pc || '')}</td><td class="num">${fmt(r.amount || 0)}</td><td>${esc(r.status || '')}</td></tr>`).join('')}</tbody></table></div>${R.ae.extra.length > 60 ? `<p class="note">…and ${R.ae.extra.length - 60} more (see the copied report).</p>` : ''}</div>` : '';
   const gs = R.guess.length ? `<div class="card"><h2>Files the tool placed by guess (${R.guess.length})</h2><div class="tw"><table><thead><tr><th>File</th><th>What it is</th><th>Why</th></tr></thead><tbody>${R.guess.map(g => `<tr><td>${esc(g.f)}</td><td>${esc(g.kind)}</td><td>${esc(g.why)}</td></tr>`).join('')}</tbody></table></div></div>` : '';
   return `<h1>Data review</h1><p class="sub">Everything brought in, split by account and month and counted from every file. Profit should be shared only for months marked “No mistake found”.</p>${head}<div class="row" style="margin:8px 0"><button class="btn" data-act="rvCopy">Copy report</button><button class="btn" data-act="print">PDF / Print</button><button class="btn" data-act="goAdd12">Add more files or a link</button></div>${tbl}${list}${aeX}${gs}`;
 };
 Object.assign(ACT, {
-  goAdd12: () => go('add'), rvOpen: el => go('audit', { acct: el.dataset.a, month: el.dataset.m, tab: 'summary' }),
+  goAdd12: () => go('add'), rvPdf: el => { go('audit', { acct: el.dataset.a, month: el.dataset.m, tab: 'summary' }); setTimeout(() => ACT.print(), 300); }, rvOpen: el => go('audit', { acct: el.dataset.a, month: el.dataset.m, tab: 'summary' }),
   rvCopy: () => { const t = reviewText(reviewModel()); try { navigator.clipboard.writeText(t); toast('Report copied. Paste it in WhatsApp or e-mail.'); } catch (e) { toast('Could not copy.'); } }
 });
-Object.assign(HELPT, { rvOpen: 'Opens this account and month.', rvCopy: 'Copies the whole review as plain text.', goAdd12: 'Goes to Files & Drive.' });
+Object.assign(HELPT, { rvPdf: 'Makes the printed / PDF report of only this account and month.', rvOpen: 'Opens this account and month.', rvCopy: 'Copies the whole review as plain text.', goAdd12: 'Goes to Files & Drive.' });
 // after a Drive link is read, show the split at once
 const _linkGo12 = linkGo;
 linkGo = async function () { const n0 = FILES.length; await _linkGo12.apply(this, arguments); try { if (FILES.length > n0 || S.results.length) { go('review'); toast('Split by account and month is below. Mistakes and gaps are written out.'); } } catch (e) { } };
@@ -4609,5 +4609,49 @@ async function sharpImg(src) {
     x.putImageData(d, 0, 0); return c;
   } catch (e) { return src; }
 }
+
+/* Audit Desk v3.3 — the printed / PDF audit report is its own clean document: only this account and month,
+   no menus, no steps, no Drive or file names. Every print route (button, Ctrl+P, phone share) uses it. */
+function reportHTML(a, m, A) {
+  const st = (() => { try { return auditStatus(a, m, A); } catch (e) { return null; } })();
+  const lock = K.locks[a.id + '|' + m];
+  const verdict = st ? (st.verified ? 'Checked: money matched and no open issue' : st.bad ? 'Not verified: a serious issue is open' : 'Not verified yet') : 'Not verified yet';
+  const vcls = st && st.verified ? 'ok' : st && st.bad ? 'bad' : 'warn';
+  const row = (() => { try { return reviewModel().rows.find(r => r.a.id === a.id && r.m === m); } catch (e) { return null; } })();
+  const cut = h => h.replace(/<button[^>]*class="help"[\s\S]*?<\/button>/g, '').replace(/<button[\s\S]*?<\/button>/g, '');
+  if (A.kind !== 'ebay') return `<div class="rpthead">${reportHead(a, m)}</div><div class="rptv ${vcls}"><b>${esc(verdict)}</b></div>${cut(T.summary(a, m, A))}${cut(typeof T.pnl === 'function' && A.kind === 'ebay' ? T.pnl(a, m, A) : '')}`;
+  const z = k => A.sums[k] || 0, om = A.orMatch || {};
+  const sold = row ? row.sold : (A.orders || []).filter(o => o.qty > 0).length;
+  const tiles = `<div class="rpttiles"><div><span>Sales (buyers paid)</span><b>${fmt(z('gross'))}</b></div><div><span>eBay net to you</span><b>${fmt(z('net'))}</b></div><div><span>Cost of goods</span><b>${fmt(A.cogs || 0)}</b></div><div><span>Profit${A.nCostMissing ? ' (not final)' : ''}</span><b>${fmt(A.profit)}</b></div><div><span>Orders · units</span><b>${z('orders')} · ${z('units')}</b></div></div>`;
+  const steps = st ? `<ul class="rptsteps">${st.S.map(s => `<li>${s.ok ? '✓' : '○'} <b>${esc(s.t)}</b> — ${esc(s.why)}</li>`).join('')}</ul>` : '';
+  const srcN = row ? Object.entries(row.src).filter(([k]) => k !== 'none').map(([k, v]) => `${v} from ${k === 'none' ? 'no source yet' : k}`).join(', ') : '';
+  const checks = `<ul class="rptsteps"><li>${A.netFail ? '○' : '✓'} eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}.</li><li>${Math.abs(A.cash.diff) <= 1 ? '✓' : '○'} Cash difference ${fmt(A.cash.diff)}.</li><li>${om.onlyTxn && om.onlyOr && !om.onlyTxn.length && !om.onlyOr.length ? '✓' : '○'} Orders report ${om.inOr == null ? '—' : om.inOr} orders · Transaction report ${om.inTxn == null ? '—' : om.inTxn} orders${om.onlyTxn ? ` · only in one report: ${om.onlyTxn.length + om.onlyOr.length}` : ''}.</li><li>${A.nCostMissing ? '○' : '✓'} Cost known for ${row ? sold - row.noCost.length : A.costKnown} of ${sold} sold orders${srcN ? ' (' + esc(srcN) + ')' : ''}${A.nCostMissing ? ` — ${A.nCostMissing} missing` : ''}.</li><li>${A.payMatch ? (A.payMatch.found === A.payMatch.total ? '✓' : '○') + ` ${A.payMatch.found} of ${A.payMatch.total} payouts found in the bank statement.` : '○ No bank statement was available, so payouts are not proven.'}</li></ul>`;
+  let cash = cut(T.cash(a, m, A)); const hi = cash.indexOf('<div class="card"><h2>Still held by eBay'); if (hi > -1) { const n = Object.keys(A.cash.heldOrders || {}).length; cash = cash.slice(0, hi) + `<p class="note">Still held by eBay: ${n} order${n === 1 ? '' : 's'}, ${fmt(A.cash.held)}.</p>`; }
+  const pnl = cut(T.pnl(a, m, A));
+  const shot = (() => { try { return cut(shotTable(a, m, A)); } catch (e) { return ''; } })();
+  const items = row ? row.F.filter(f => f.s !== 'info' || /earlier month/.test(f.t)) : [];
+  const notes = items.length ? `<ul class="rptsteps">${items.map(f => `<li>${f.s === 'bad' ? '!' : f.s === 'warn' ? '?' : 'i'} ${f.t.replace(' (list below)', '')}</li>`).join('')}</ul>` : '<p class="note">No mistake or gap found.</p>';
+  const exp = (() => { try { const c = splitCalc(a, A.profit, lock, m); if (!c.exp && !c.rows.length) return ''; const r2 = (l, v, b) => `<tr><td>${b ? '<b>' + esc(l) + '</b>' : esc(l)}</td><td style="text-align:right">${b ? '<b>' + fmt(v) + '</b>' : fmt(v)}</td></tr>`; return `<div class="card"><table><tbody>${r2('Profit', A.profit)}${c.exp ? r2('Expenses', -c.exp) : ''}${c.rows.map(r => r2(splitLabel(r), -r.amt)).join('')}${r2('Left for you', c.left, true)}</tbody></table>${A.nCostMissing ? '<p class="note">Profit is not final: some orders have no cost yet.</p>' : ''}</div>`; } catch (e) { return ''; } })();
+  const lockTxt = lock ? `<p class="note">Approved and locked on ${esc(String(lock.at).slice(0, 10))}${lock.by ? ' by ' + esc(lock.by) : ''}.</p>` : '<p class="note">Not approved or locked yet.</p>';
+  return `<div class="rpthead">${reportHead(a, m)}</div><div class="rptv ${vcls}"><b>${esc(verdict)}</b></div>${tiles}
+  <h2 class="rh">1. Result of the audit</h2>${steps}${checks}${lockTxt}
+  <h2 class="rh">2. Profit and loss</h2>${pnl}
+  <h2 class="rh">3. Cash and payouts</h2>${cash}
+  ${shot ? `<h2 class="rh">4. Seller Hub screenshot against the tool</h2>${shot}` : ''}
+  <h2 class="rh">${shot ? 5 : 4}. Mistakes, gaps and notes</h2>${notes}
+  ${exp ? `<h2 class="rh">${shot ? 6 : 5}. Expenses and profit split</h2>${exp}` : ''}
+  <p class="rptfoot">${esc(stamp())} · Prepared from the eBay reports for this account and month. Product cost comes from the AliExpress export, VA sheet or stock list; eBay does not hold it.</p>`;
+}
+function reportHead(a, m) { return `<span class="lg">${LOGO_SVG}</span><div><div class="rpttitle">Audit report · ${esc(a.name)} · ${esc(MLL(m))}</div><div class="note">${esc(a.Platform || 'eBay')}${a.Seller ? ' · ' + esc(a.Seller) : ''} · ${esc(stamp())}</div></div>`; }
+function rptOn() {
+  if (S.view !== 'audit' || !acctById(S.acct) || !S.month) return false; const a = acctById(S.acct), A = getAudit(S.acct, S.month); if (!A || A.error || !A.sums) return false;
+  let h = ''; try { h = reportHTML(a, S.month, A); } catch (e) { logErr(e, 'report'); return false; }
+  let el = $('#rpt'); if (!el) { el = document.createElement('div'); el.id = 'rpt'; document.body.appendChild(el); } el.innerHTML = h; document.body.classList.add('rptmode'); return true;
+}
+function rptOff() { document.body.classList.remove('rptmode'); const el = $('#rpt'); if (el) el.remove(); }
+{ const st = document.createElement('style'); st.textContent = `#rpt{display:none}@media print{body.rptmode>*:not(#rpt){display:none!important}body.rptmode #rpt{display:block!important;font-size:11px;color:#000;background:#fff;padding:0}body.rptmode #rpt .card{border:1px solid #ccc;box-shadow:none;margin:6px 0;padding:8px}#rpt .help,#rpt .btn,#rpt button{display:none!important}.rpthead{display:flex;gap:12px;align-items:center;border-bottom:2px solid #173f78;padding-bottom:8px;margin-bottom:8px}.rpthead .lg{width:42px;height:42px}.rpthead .lg svg{width:100%;height:100%}.rpttitle{font-size:17px;font-weight:700}.rptv{padding:8px 10px;border-radius:6px;border:1px solid #ccc;margin:6px 0}.rptv.ok{background:#e6f4ea}.rptv.bad{background:#fde7e7}.rptv.warn{background:#fff4d6}.rpttiles{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:8px 0}.rpttiles>div{border:1px solid #ccc;border-radius:6px;padding:6px}.rpttiles span{display:block;font-size:9px;color:#555}.rpttiles b{font-size:14px}h2.rh{font-size:13px;margin:12px 0 4px;border-bottom:1px solid #999;padding-bottom:2px;break-after:avoid}.rptsteps{margin:4px 0 6px 0;padding-left:16px;list-style:none}.rptsteps li{margin:2px 0}.rptfoot{font-size:9px;color:#666;margin-top:12px}#rpt table{width:100%;border-collapse:collapse}#rpt td,#rpt th{border-bottom:1px solid #ddd;padding:2px 4px}#rpt tr{break-inside:avoid}}`; document.head.appendChild(st); }
+ACT.print = () => { if (rptOn()) { const done = () => { rptOff(); window.removeEventListener('afterprint', done); }; window.addEventListener('afterprint', done); setTimeout(() => window.print(), 80); setTimeout(done, 90000); } else _print(); };
+window.addEventListener('beforeprint', () => { if (!document.body.classList.contains('rptmode')) rptOn(); });
+window.addEventListener('afterprint', () => { rptOff(); });
 </script>
 </body></html>
