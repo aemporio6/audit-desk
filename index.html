@@ -1413,7 +1413,7 @@ function extraIssues(acctId, month) {
     if (a && a.type !== 'Own stock' && !activeParts('va_sheet').some(p => p.acct === acctId) && !(K.skips || {})[acctId + '|' + month + '|va']) X.push({ kind: 'Missing file', ref: 'VA order sheet', amt: null });
     if (a && a.type !== 'Dropship' && !activeParts('stock_cost').length && !K.stockIn.length && !(K.skips || {})[acctId + '|' + month + '|stock']) X.push({ kind: 'Missing file', ref: 'Stock cost list', amt: null });
     const sh = K.shots[acctId + '|' + month];
-    if (sh) { const c = shotCompare(A, sh); if (sh.from && sh.to && (sh.from !== A.start || sh.to !== A.end)) X.push({ kind: 'Screenshot for a different period', ref: `${sh.from} to ${sh.to}`, amt: null }); else if (c.some(r => r.bad)) X.push({ kind: 'Screenshot does not match', ref: c.filter(r => r.bad).map(r => r.k).join(', '), amt: null }); }
+    if (sh) { const c = shotCompare(A, sh); if (sh.from && sh.to && (sh.from !== A.start || sh.to !== A.end) && !shotSpans(sh, A)) X.push({ kind: 'Screenshot for a different period', ref: `${sh.from} to ${sh.to}`, amt: null }); else if (c.some(r => r.bad)) X.push({ kind: 'Screenshot does not match', ref: c.filter(r => r.bad).map(r => r.k).join(', '), amt: null }); }
   }
   return X;
 }
@@ -4410,11 +4410,11 @@ steps = function (acctId, month) { const g = _steps12.apply(this, arguments); tr
 function bridgeCard(a, m, A) {
   if (!A || !A.sums || A.kind !== 'ebay') return '';
   const z = k => A.sums[k] || 0, g = z('gross'), net = z('net'), ded = net - g;
-  const parts = [['Final value fees', z('fvf') + z('inad') + z('below')], ['Insertion', z('insertion')], ['Regulatory', z('reg')], ['International', z('intl')], ['Ads', z('ads')], ['Postage labels', z('postage')], ['Store subscription', z('subscription')], ['Other fees', z('otherFees')], ['Fee credits', -(z('feeCredits') + z('adsCredit') + z('fvfCreditStandalone'))], ['Refunds', -z('refunds')]].filter(x => x[1]);
+  let parts = [['Final value fees', z('fvf') + z('inad') + z('below')], ['Insertion', z('insertion')], ['Regulatory', z('reg')], ['International', z('intl')], ['Ads', z('ads')], ['Postage labels', z('postage')], ['Store subscription', z('subscription')], ['Other fees', z('otherFees')], ['Fee credits', -(z('feeCredits') + z('adsCredit') + z('fvfCreditStandalone'))], ['Refunds', -z('refunds')], ['Claims', -z('claims')]].filter(x => x[1]); { const rest = Math.round(-ded - parts.reduce((t, x) => t + x[1], 0)); if (Math.abs(rest) >= 1) parts.push(['Other (adjustments, holds)', rest]); }
   const cogs = A.cogs || 0, profit = A.profit;
   const row = (l, v, b) => `<tr><td${b ? ' style="font-weight:700"' : ''}>${l}</td><td class="num" style="text-align:right${b ? ';font-weight:700' : ''}">${fmt(v)}</td></tr>`;
   const pct = g ? Math.round(1000 * net / g) / 10 : 0;
-  return `<div class="card"><h2>From sales to profit ${help('Every step between what buyers paid and what is left. If net is far below sales, the lines in between show why.')}</h2><div class="tw"><table><tbody>${row('Sales (buyers paid)', g, 1)}${row('Fees, refunds and other eBay deductions (total)', ded)}${parts.map(p => `<tr><td class="note" style="padding-left:18px">of which ${esc(p[0])}</td><td class="num note" style="text-align:right">${fmt(p[1])}</td></tr>`).join('')}${row('eBay net (' + pct + '% of sales)', net, 1)}${row('Cost of goods' + (A.nCostMissing ? ` (${A.nCostMissing} order${A.nCostMissing === 1 ? '' : 's'} without cost)` : ''), -cogs)}${row('Profit', profit, 1)}</tbody></table></div>${pct && pct < 70 ? '<p class="note">eBay net is under 70% of sales. Look at refunds, ads and postage above, they are usually the cause.</p>' : ''}</div>`;
+  return `<div class="card"><h2>From sales to profit ${help('Every step between what buyers paid and what is left. If net is far below sales, the lines in between show why.')}</h2><div class="tw"><table><tbody>${row('Sales (buyers paid)', g, 1)}${row('Fees, refunds and other eBay deductions (total)', ded)}${parts.map(p => `<tr><td class="note" style="padding-left:18px">of which ${esc(p[0])}</td><td class="num note" style="text-align:right">${fmt(-p[1])}</td></tr>`).join('')}${row('eBay net (' + pct + '% of sales)', net, 1)}${row('Cost of goods' + (A.nCostMissing ? ` (${A.nCostMissing} order${A.nCostMissing === 1 ? '' : 's'} without cost)` : ''), -cogs)}${row('Profit', profit, 1)}</tbody></table></div>${pct && pct < 70 ? '<p class="note">eBay net is under 70% of sales. Look at refunds, ads and postage above, they are usually the cause.</p>' : ''}</div>`;
 }
 function sourceCard(a, m) {
   const rows = []; FILES.filter(f => f.status !== 'ignored').forEach(f => f.parts.filter(p => !p.ignored && !p.replacedBy && (p.acct === a.id || p.acct === '*') && (!p.month || p.month === m || p.month === '*')).forEach(p => rows.push({ n: f.name, k: p.label || KIND_LABEL[p.kind] || p.kind, d: String(f.added || '').slice(0, 10) })));
@@ -4429,12 +4429,81 @@ function shotTable(a, m, A) {
   let L = []; try { L = shotCompare(A, s); } catch (e) { return ''; }
   if (!L.length) return '';
   const f = r => r.isQty ? String(r.theirs / 100) : fmt(r.theirs), o = r => r.ours == null ? '—' : r.isQty ? String(r.ours / 100) : fmt(r.ours);
-  return `<div class="card"><h2>Seller Hub screenshot against the tool</h2><div class="tw"><table><thead><tr><th>Line</th><th>Screenshot</th><th>Tool</th><th>Difference</th></tr></thead><tbody>${L.map(r => `<tr><td>${esc(r.k)}</td><td class="num">${f(r)}</td><td class="num">${o(r)}</td><td class="num">${r.d == null ? '—' : r.isQty ? String(r.d / 100) : fmt(r.d)} ${r.bad ? pill('check', 'bad') : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
+  return `<div class="card"><h2>Seller Hub screenshot against the tool${L.many ? ` · ${esc(L.from)} to ${esc(L.to)}` : ''}</h2>${L.many ? '<p class="note">This screenshot covers several months, so it is compared with the total of all those months.</p>' : ''}<div class="tw"><table><thead><tr><th>Line</th><th>Screenshot</th><th>Tool</th><th>Difference</th></tr></thead><tbody>${L.map(r => `<tr><td>${esc(r.k)}</td><td class="num">${f(r)}</td><td class="num">${o(r)}</td><td class="num">${r.d == null ? '—' : r.isQty ? String(r.d / 100) : fmt(r.d)} ${r.bad ? pill('check', 'bad') : ''}</td></tr>`).join('')}</tbody></table></div>${(() => { const sr = L.find(r => r.k.startsWith('Total sales')); return sr && sr.bad && sr.d > 0 && L.refunds ? `<p class="note">Sales differ by ${fmt(sr.d)}. Refunds in these months are ${fmt(L.refunds)}; after them ${fmt(Math.abs(sr.d - L.refunds))} is left to check.</p>` : ''; })()}</div>`;
 }
 const _tsum12 = T.summary;
 T.summary = (a, m, A) => _tsum12(a, m, A) + bridgeCard(a, m, A) + shotTable(a, m, A) + sourceCard(a, m) + openCard(a, m);
 // a plain browser print (Ctrl+P, phone "Share → Print") gets the same heading as the Print button
 window.addEventListener('beforeprint', () => { const v = $('#view'); if (!v || v.querySelector('.printhead')) return; const h = document.createElement('div'); h.className = 'printhead pa12'; h.innerHTML = `<span class="lg">${LOGO_SVG}</span><div><b>Audit Desk</b>${S.view === 'audit' && acctById(S.acct) ? ' · ' + esc(acctById(S.acct).name) + ' · ' + MLL(S.month) : ''}<div class="note">${esc(stamp())}</div></div>`; v.prepend(h); });
 window.addEventListener('afterprint', () => { $$('.pa12').forEach(n => n.remove()); });
+
+/* v3.1 — Seller Hub screenshots that cover several months, and a more careful picture reader. */
+SHOT_FIELDS.push(['net', 'Net sales (after selling costs)']);
+function shotSpans(sh, A) { return !!(sh && sh.from && sh.to && A && A.start && sh.from <= A.start && sh.to >= A.end && sh.from.slice(8) === '01' && sh.to.slice(0, 7) >= A.end.slice(0, 7)); }
+function shotAcctOf(s) { const k = Object.keys(K.shots).find(x => K.shots[x] === s); return k ? k.split('|')[0] : null; }
+function aggAudit(acct, from, to) {
+  const A = { sums: {}, start: from, end: to, orMatch: { qty: 0, totals: { all: 0 } }, kind: 'ebay' }; let n = 0, m = from.slice(0, 7);
+  for (let g = 0; g < 24 && m <= to.slice(0, 7); g++, m = AD.addMonths(m, 1)) {
+    const X = getAudit(acct, m); if (!X || !X.sums) continue; n++;
+    Object.entries(X.sums).forEach(([k, v]) => { if (typeof v === 'number') A.sums[k] = (A.sums[k] || 0) + v; });
+    if (X.orMatch) { A.orMatch.qty += X.orMatch.qty || 0; A.orMatch.totals.all += Object.values(X.orMatch.totals || {}).reduce((x, y) => x + y, 0); }
+  }
+  return n ? A : null;
+}
+const _shotCompare12 = shotCompare;
+shotCompare = function (A, s) {
+  let B = A, many = false;
+  if (s && s.from && s.to && A && A.start && (s.from < A.start || s.to > A.end)) { const ac = shotAcctOf(s); const G = ac && aggAudit(ac, s.from, s.to); if (G) { B = G; many = true; } }
+  const rows = _shotCompare12(B, s).filter(r => r.k !== 'Net sales (after selling costs)');
+  const z = k => (B.sums || {})[k] || 0;
+  if (s.net !== undefined && s.net !== '' && s.net !== null && true) { const th = Math.round(+s.net * 100), d = z('net') - th; rows.push({ k: 'Net sales (after selling costs)', theirs: th, ours: z('net'), d, bad: Math.abs(d) > 100 }); }
+  rows.many = many; rows.from = many ? s.from : null; rows.to = many ? s.to : null; rows.refunds = -z('refunds');
+  return rows;
+};
+// ---- picture reader: tolerant of the usual mistakes (missing decimal point, £ read as 5, labels cut) ----
+const _ocrShot12 = ocrShot;
+const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+function periodIn(t) {
+  const m = t.match(/(\d{1,2})\s*([A-Za-z]{3})[a-z]*\.?\s*(\d{4})\s*[-–—~to]+\s*(\d{1,2})\s*([A-Za-z]{3})[a-z]*\.?\s*(\d{4})/i); if (!m) return null;
+  const a = MON[m[2].toLowerCase()], b = MON[m[5].toLowerCase()]; if (!a || !b) return null; const P = n => String(n).padStart(2, '0');
+  return { from: `${m[3]}-${P(a)}-${P(+m[1])}`, to: `${m[6]}-${P(b)}-${P(+m[4])}` };
+}
+const decMoney = l => (String(l).replace(/\d+(?:\.\d+)?\s*%/g, ' ').match(/\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)/g) || []).map(x => +x.replace(/,/g, ''));
+ocrShot = function (text) {
+  const L = String(text || '').split(/\n+/).map(x => x.trim()).filter(Boolean), out = {};
+  // summary picture: three labels, then three amounts under them
+  const hi = L.findIndex(l => /(sales|sles|soles)/i.test(l) && /(cost)/i.test(l));
+  if (hi >= 0) {
+    const v = decMoney(L[hi + 1] || '');
+    if (v.length >= 3) { out.sales = v[0]; out.costs = v[1]; out.net = v[2]; if (Math.abs(out.sales - out.costs - out.net) > 0.02) out.costs = Math.round((out.sales - out.net) * 100) / 100; }
+    const q = (L[hi + 2] || '').match(/^\D{0,3}(\d{1,6})\b/); const qi = L.findIndex(l => /quant/i.test(l)); const q2 = qi >= 0 ? (L[qi + 1] || '').match(/^\D{0,3}(\d{1,6})\b/) : null; if (q2) out.qty = +q2[1];
+  }
+  const per = periodIn(String(text || '')); if (per) { out.from = per.from; out.to = per.to; }
+  // breakdown picture: each line has an amount and its share of the total, which proves the amount
+  const all = decMoney(L.join('\n')); const total = (() => { const ti = L.findIndex(l => /selling costs/i.test(l) && decMoney(l).length); return ti >= 0 ? decMoney(L[ti])[0] : (L.some(l => /breakdown/i.test(l)) && all.length ? all[0] : null); })();
+  if (total && L.some(l => /breakdown|percent of selling/i.test(l))) {
+    out.costs = out.costs || total;
+    const R = { ins: /insert|nsertion/i, fvf: /final val|valve|value fee/i, reg: /regul|reguiat/i, cred: /fee credit|transaction fee/i, post: /postage lab/i, sub: /subscr|supscr/i, ads: /^\W*(ad|promoted)\W*fees|promoted/i };
+    Object.entries(R).forEach(([k, re]) => {
+      const line = L.find(l => re.test(l)); if (!line) return;
+      const mm = line.match(re), after = line.slice(mm.index + mm[0].length);
+      const pm = after.match(/(\d+(?:\.\d+)?)\s*%/g); const pr = pm ? pm[pm.length - 1].replace(/\s*%/, '') : null; const pcs = pr === null ? [] : /\./.test(pr) ? [+pr] : [+pr, +pr / 10];
+      let c = decMoney(after).slice(0, 1);
+      if (!c.length) { const t = after.replace(/\d+(?:\.\d+)?\s*%/g, ' ').match(/\d{3,7}/g); if (t) { const n = t[t.length - 1]; c = [+n / 100]; if (n.length > 3) c.push(+n.slice(1) / 100); } }
+      if (!c.length) return;
+      if (!pcs.length) { if (decMoney(after).length) out[k] = c[0]; return; }
+      let best = null; c.forEach(a => pcs.forEach(q => { const e = Math.abs(a - total * q / 100); if (!best || e < best.e) best = { a, e }; }));
+      if (best && best.e <= Math.max(0.6, total * 0.0012)) out[k] = k === 'cred' ? -Math.abs(best.a) : best.a;
+    });
+  }
+  return Object.keys(out).length ? out : _ocrShot12(text);
+};
+
+const _classifyText12 = classifyText;
+classifyText = function (t) {
+  const k = _classifyText12(t); if (k === 'screenshot' || k === 'stmt_image') return k;
+  const W = [[/report\s*for\s*\d/i, 2], [/net\s*s[oa]les/i, 2], [/quant\w*\s*sold/i, 2], [/se?l+ing\s*cost|sling\s*cost/i, 2], [/sales\s*via/i, 2], [/buyer\s*insights/i, 1], [/prior\s*time\s*period/i, 1], [/percent\s*of\s*selling/i, 2], [/breakdown/i, 1]];
+  return W.reduce((n, [re, w]) => n + (re.test(t) ? w : 0), 0) >= 4 ? 'screenshot' : k;
+};
 </script>
 </body></html>
