@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '3.3.1';
+const APPV = '3.3.2';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -2821,10 +2821,11 @@ function acctFromText(t) {
 const PIC_KINDS = ['screenshot', 'stmt_image', 'pdf', 'other_pic'];
 const KIND_NAME = { screenshot: 'Screenshot (Seller Hub)', stmt_image: 'Statement (picture / PDF)', pdf: 'PDF (kept as proof)', other_pic: 'Picture (not an audit page)' };
 // use what was read: kind, account, month, Seller Hub numbers
+const RESET = new Set();
 function ocrApply(rec, text) {
   const p = rec.parts[0]; if (!p || !PIC_KINDS.includes(p.kind)) return;
   const h = rec.hint || {}, chosen = p.placedBy === 'your choice' || p.checked;
-  rec.ocr = { at: new Date().toISOString(), len: text.length, text: text.slice(0, 4000) };
+  const rr = rec._rr; rec._rr = false; rec.ocr = { at: new Date().toISOString(), len: text.length, text: text.slice(0, 4000), rv: 3 };
   const kind = classifyText(text);
   if (kind && kind !== p.kind && !chosen) {
     if (kind === 'other_pic' && (h.acct || p.kind === 'stmt_image')) { /* picked for an audit step or named as a statement: keep it there */ }
@@ -2842,7 +2843,8 @@ function ocrApply(rec, text) {
   if (p.kind === 'screenshot' && p.acct && p.acct !== '*' && p.month) {
     const nums = ocrShot(text), key = p.acct + '|' + p.month, cur = K.shots[key];
     if (Object.keys(nums).length && (!cur || cur.auto) && !K.locks[key]) {
-      const s = Object.assign({}, cur || {}); Object.entries(nums).forEach(([k, v]) => { if (s[k] === undefined || s[k] === '') s[k] = v; });
+      const s = Object.assign({}, cur || {}); if (rr && cur && cur.auto && !RESET.has(key)) { RESET.add(key); SHOT_FIELDS.forEach(f => { delete s[f[0]]; }); delete s.from; delete s.to; }
+      Object.entries(nums).forEach(([k, v]) => { if (s[k] === undefined || s[k] === '') s[k] = v; });
       if (!s.from && dates.length >= 2) { s.from = dates[0]; s.to = dates[1]; }
       s.auto = true; K.shots[key] = s; save('shots'); p.shotFilled = true;
     }
@@ -2870,10 +2872,10 @@ async function ocrAll() {
   try {
     let n = 0;
     for (;;) {
-      const rec = FILES.find(f => !f._hist && !f.ocr && (f.type === 'image' || f.type === 'pdf') && f.parts[0] && PIC_KINDS.includes(f.parts[0].kind));
+      const rec = FILES.find(f => !f._hist && (!f.ocr || (f.type === 'image' && f.ocr.rv !== 3 && !f.ocr.skip && !f._rrTried && (f._rr = true))) && (f.type === 'image' || f.type === 'pdf') && f.parts[0] && PIC_KINDS.includes(f.parts[0].kind));
       if (!rec) break;
       if (!n) { DRV.msg = 'Reading pictures and PDFs…'; } n++;
-      await ocrOne(rec); if (!rec.ocr) rec.ocr = { at: new Date().toISOString(), skip: 'not read' };
+      rec._rrTried = true; await ocrOne(rec); if (!rec.ocr) rec.ocr = { at: new Date().toISOString(), skip: 'not read' };
       if (S.results) S.results.forEach(r => { if (r.rec === rec || (r.rec && r.rec.id === rec.id)) r.msgs = describe(rec); });
       invalidate(); if (typeof safeRender === 'function') safeRender();
       if (OCR.failed) break;
@@ -4546,7 +4548,7 @@ function reviewModel() {
     if (outside.length) F.push({ s: 'warn', t: `${outside.length} order${outside.length > 1 ? 's are' : ' is'} dated outside ${MLL(m)}: ${idsTxt(outside)}.` });
     if (earlier.length) F.push({ s: 'info', t: `${earlier.length} refund${earlier.length > 1 ? 's are' : ' is'} for orders of an earlier month (no cost needed): ${idsTxt(earlier)}.` });
     if (uses && !single && R.ae.extra.length && false) { }
-    if (ae.extra.length) F.push({ s: 'warn', t: `AliExpress shows ${ae.n} orders dated in ${MLL(m)}, but only ${ae.used} are used by eBay orders. ${ae.extra.length} extra: they were bought for another account, another month or are not sold yet (list below).` });
+    if (false && ae.extra.length) F.push({ s: 'warn', t: `AliExpress shows ${ae.n} orders dated in ${MLL(m)}, but only ${ae.used} are used by eBay orders. ${ae.extra.length} extra: they were bought for another account, another month or are not sold yet (list below).` });
     let stm = false; try { const t = txnMerged(a.id, m); stm = t ? stmtsFor(t, m).length > 0 : false; } catch (e) { }
     if (!stm) F.push({ s: 'warn', t: 'No bank / Wise statement: payouts are not proven.' });
     const sh = K.shots[a.id + '|' + m]; let shBad = null;
