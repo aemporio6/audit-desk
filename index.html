@@ -705,11 +705,11 @@ AD.auditEbay = function (txn, orders, ctx) {
   const site = ccy => ccy === 'USD' ? 'US ($)' : ccy === 'EUR' ? 'EU (€)' : ccy === 'AUD' ? 'AU (A$)' : ccy === 'CAD' ? 'CA (C$)' : 'UK (£)';
   const ordersInTxn = new Map(); // order -> {gross, net, fees, ads, refund, qty, sku, date, site, title, items}
   const getO = (o, l) => { let x = ordersInTxn.get(o); if (!x) { x = { order: o, gross: 0, net: 0, fees: 0, ads: 0, refund: 0, claim: 0, qty: 0, skus: [], titles: [], date: null, site: site(l.bccy), sold: false, held: 0, inad: 0, below: 0, postage: 0, dispute: 0, refundDates: [] }; ordersInTxn.set(o, x); } return x; };
-  const otherFeeKinds = {}; const unknown = {};
+  const otherFeeKinds = {}; const unknown = {}; const holdOrd = new Set(), labels = [], holdAmt = {}, holdMax = {};
   L.forEach(l => {
     const t = l.type;
     if (t === 'Payout' || t === 'Secondary payout') { add('payouts', -l.net); add('nPayouts', 1); return; }
-    if (t === 'Hold') { add('holds', l.net); return; }
+    if (t === 'Hold') { add('holds', l.net); if (l.order) { holdOrd.add(l.order); holdAmt[l.order] = (holdAmt[l.order] || 0) + l.net; holdMax[l.order] = Math.max(holdMax[l.order] || 0, Math.abs(l.net)); } return; }
     add('net', l.net);
     if (l.unknownType) { unknown[t] = (unknown[t] || 0) + l.net; add('unknownNet', l.net); }
     const st = site(l.bccy); sites[st] = sites[st] || { net: 0, gross: 0, orders: 0, fees: 0 };
@@ -740,7 +740,7 @@ AD.auditEbay = function (txn, orders, ctx) {
       else if (/subscription|store/i.test(d)) add('subscription', -l.net);
       else if (/final value fee/i.test(d)) add('fvfCreditStandalone', l.net);
       else add('otherFees', -l.net);
-    } else if (t === 'Postage label' || t === 'Shipping label') { add('postage', -l.net); if (l.order) { const o = getO(l.order, l); o.postage += -l.net; o.net += l.net; } }
+    } else if (t === 'Postage label' || t === 'Shipping label') { add('postage', -l.net); labels.push({ order: l.order || '', amt: Math.round(-l.net) }); if (l.order) { const o = getO(l.order, l); o.postage += -l.net; o.net += l.net; } }
     else add('otherLines', l.net);
   });
   // cash roll-forward
@@ -772,7 +772,7 @@ AD.auditEbay = function (txn, orders, ctx) {
     let cost = null, src = '', ae = '', flags = [];
     if (va && va.cost > 0) { cost = va.cost; src = 'VA sheet'; ae = va.ae; if (va.conflict) flags.push('Two different costs in VA sheet'); if (ctx.ae && ctx.ae.length && o.pc) { const nm = norm(o.buyer); const c = ctx.ae.filter(x => !x._used && x.pc === o.pc && within(x.date, o.date, -1, 10)); const m = c.find(x => (va.ae && x.ae === va.ae) || (nm && norm(x.buyer) === nm)) || (c.length === 1 ? c[0] : null); if (m) { m._used = true; if (!ae) ae = m.ae; if (Math.abs(m.amount - cost) > 5) flags.push('VA cost differs from AliExpress'); } } }
     else if (o.skus.length && o.skus.every(s => C.bySku.has(s.sku))) { cost = o.skus.reduce((a, s) => a + C.bySku.get(s.sku).cost * (s.qty || 1), 0); src = 'Stock cost list'; }
-    else if (o.sold && ctx.ae && ctx.ae.length && o.pc) { const nm = norm(o.buyer); const c = ctx.ae.filter(x => !x._used && x.pc === o.pc && within(x.date, o.date, -1, 10)); const m = c.find(x => nm && norm(x.buyer) === nm) || (c.length === 1 ? c[0] : null) || c.find(x => nm && norm(x.buyer).slice(0, 4) === nm.slice(0, 4)); if (m) { m._used = true; cost = m.amount; src = 'AliExpress export'; ae = m.ae; const rm = String(m.refund || '').match(/(?:refund completed|full refund issued|refunded)\D{0,12}£\s*([\d,]+(?:\.\d+)?)/i); if (rm) { aeExportRef += Math.round(parseFloat(rm[1].replace(/,/g, '')) * 100); flags.push('AliExpress refund received'); } else if (/refund|closed/i.test(m.refund + ' ' + m.status) && !/none/i.test(m.refund)) flags.push('AliExpress refund to claim'); } }
+    else if (o.sold && ctx.ae && ctx.ae.length && o.pc) { const nm = norm(o.buyer); const c = ctx.ae.filter(x => !x._used && x.pc === o.pc && within(x.date, o.date, -1, 21)); const dd = x => Math.abs((new Date(x.date) - new Date(o.date)) / 864e5); const same = c.filter(x => nm && norm(x.buyer) === nm).sort((x, y) => dd(x) - dd(y))[0]; const c10 = c.filter(x => dd(x) <= 10); const m = same || (c10.length === 1 ? c10[0] : null) || c10.find(x => nm && norm(x.buyer).slice(0, 4) === nm.slice(0, 4)); if (m) { m._used = true; cost = m.amount; src = 'AliExpress export'; ae = m.ae; const rm = String(m.refund || '').match(/(?:refund completed|full refund issued|refunded)\D{0,12}£\s*([\d,]+(?:\.\d+)?)/i); if (rm) { const rc = Math.round(parseFloat(rm[1].replace(/,/g, '')) * 100); aeExportRef += rc; o.aeRef = rc; flags.push('AliExpress refund received'); } else if (/refund|closed/i.test(m.refund + ' ' + m.status) && !/none/i.test(m.refund)) flags.push('AliExpress refund to claim'); } }
     if (o.sold) {
       if (cost !== null) { cogs += cost; costKnown++; }
       else if (!fullyRefunded) { nCostMissing++; flags.push('No cost found'); }
@@ -797,7 +797,7 @@ AD.auditEbay = function (txn, orders, ctx) {
     }
     const profit = o.net - (o.sold && cost ? cost : 0);
     if (o.sold && cost !== null && profit < 0 && !fullyRefunded) flags.push('Loss-making order');
-    OL.push({ order: o.order, date: o.date, site: o.site, qty: o.qty, sku: o.skus.map(s => s.sku).join(', '), title: o.titles[0] || '', gross: o.gross, fees: o.fees, ads: o.ads, refund: o.refund + o.claim, net: o.net, cost: cost, costSrc: src, ae, profit: cost !== null || !o.sold ? profit : null, held: o.held, trk: o.trk || (va && va.trk) || '', vaStatus: va ? va.status : '', flags, refunded: fullyRefunded, rtype, rpct, back, claim: o.claim, dispute: o.dispute, refundDate: o.refundDates[0] || null });
+    OL.push({ aeRef: o.aeRef || 0, post: o.postage || 0, order: o.order, date: o.date, site: o.site, qty: o.qty, sku: o.skus.map(s => s.sku).join(', '), title: o.titles[0] || '', gross: o.gross, fees: o.fees, ads: o.ads, refund: o.refund + o.claim, net: o.net, cost: cost, costSrc: src, ae, profit: cost !== null || !o.sold ? profit : null, held: o.held, trk: o.trk || (va && va.trk) || '', vaStatus: va ? va.status : '', flags, refunded: fullyRefunded, rtype, rpct, back, claim: o.claim, dispute: o.dispute, refundDate: o.refundDates[0] || null });
   });
   // statement matching
   const stm = ctx.statements || []; let payMatch = null, aeMatch = null;
@@ -827,7 +827,7 @@ AD.auditEbay = function (txn, orders, ctx) {
   return {
     seller: txn.seller, month: txn.month, start: txn.start, end: txn.end, lines: L.length, blocks, netFail, failBlocks, sums: S, otherFeeKinds, unknownTypes: unknown,
     cash: { opening, net: S.net, holds: S.holds, payouts: S.payouts, nPayouts: z('nPayouts'), later, held: heldNo, diff: cashDiff, heldOrders },
-    plCheck, orMatch, sites, orders: OL, cogs, supplierRefunds, costKnown, nCostMissing, profit, health, payMatch, aeMatch
+    holdOrders: [...holdOrd], holdAmt, holdMax, labels, plCheck, orMatch, sites, orders: OL, cogs, supplierRefunds, costKnown, nCostMissing, profit, health, payMatch, aeMatch
   };
 };
 function addDays(d, n) { if (!d) return null; const t = new Date(Date.parse(d) + n * 864e5); return t.toISOString().slice(0, 10); }
@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '3.3.2';
+const APPV = '3.4.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -4431,7 +4431,7 @@ function shotTable(a, m, A) {
   let L = []; try { L = shotCompare(A, s); } catch (e) { return ''; }
   if (!L.length) return '';
   const f = r => r.isQty ? String(r.theirs / 100) : fmt(r.theirs), o = r => r.ours == null ? '—' : r.isQty ? String(r.ours / 100) : fmt(r.ours);
-  return `<div class="card"><h2>Seller Hub screenshot against the tool${L.many ? ` · ${esc(L.from)} to ${esc(L.to)}` : ''}</h2>${L.many ? '<p class="note">This screenshot covers several months, so it is compared with the total of all those months.</p>' : ''}<div class="tw"><table><thead><tr><th>Line</th><th>Screenshot</th><th>Tool</th><th>Difference</th></tr></thead><tbody>${L.map(r => `<tr><td>${esc(r.k)}</td><td class="num">${f(r)}</td><td class="num">${o(r)}</td><td class="num">${r.d == null ? '—' : r.isQty ? String(r.d / 100) : fmt(r.d)} ${r.bad ? pill('check', 'bad') : ''}</td></tr>`).join('')}</tbody></table></div>${(() => { const sr = L.find(r => r.k.startsWith('Total sales')); if (!sr || !sr.bad || !(sr.d > 0)) return ''; const left = sr.d - (L.refunds || 0) - (L.claims || 0); return `<p class="note">Sales differ by ${fmt(sr.d)}. Refunds in these months are ${fmt(L.refunds || 0)} and claims ${fmt(L.claims || 0)}; after them ${fmt(left)} is left.${L.heldN && Math.abs(L.heldG - left) < 100 ? ` Orders still held by eBay: ${L.heldN} orders, ${fmt(L.heldG)}; eBay may not count them yet, which would explain most of it.` : ' Check the orders of this period against Seller Hub.'}</p>`; })()}</div>`;
+  return `<div class="card"><h2>Seller Hub screenshot against the tool${L.many ? ` · ${esc(L.from)} to ${esc(L.to)}` : ''}</h2>${L.many ? '<p class="note">This screenshot covers several months, so it is compared with the total of all those months.</p>' : ''}<div class="tw"><table><thead><tr><th>Line</th><th>Screenshot</th><th>Tool</th><th>Difference</th></tr></thead><tbody>${L.map(r => `<tr><td>${esc(r.k)}</td><td class="num">${f(r)}</td><td class="num">${o(r)}</td><td class="num">${r.d == null ? '—' : r.isQty ? String(r.d / 100) : fmt(r.d)} ${r.bad ? pill('check', 'bad') : ''}</td></tr>`).join('')}</tbody></table></div>${L.notes && L.notes.length ? '<ul class="rptsteps">' + L.notes.map(n => '<li>' + esc(n) + '</li>').join('') + '</ul>' : ''}</div>`;
 }
 const _tsum12 = T.summary;
 T.summary = (a, m, A) => _tsum12(a, m, A) + bridgeCard(a, m, A) + shotTable(a, m, A) + sourceCard(a, m) + openCard(a, m);
@@ -4449,6 +4449,7 @@ function aggAudit(acct, from, to) {
     const X = getAudit(acct, m); if (!X || !X.sums) continue; n++;
     Object.entries(X.sums).forEach(([k, v]) => { if (typeof v === 'number') A.sums[k] = (A.sums[k] || 0) + v; });
     (X.orders || []).forEach(o => { if (o.held > 0 && o.gross > 0) { A.heldG += o.gross; A.heldN++; } });
+    (A.orders = A.orders || []).push(...(X.orders || [])); (A.holdOrders = A.holdOrders || []).push(...(X.holdOrders || [])); (A.labels = A.labels || []).push(...(X.labels || [])); Object.entries(X.holdAmt || {}).forEach(([o, v]) => { (A.holdAmt = A.holdAmt || {})[o] = (A.holdAmt[o] || 0) + v; }); Object.entries(X.holdMax || {}).forEach(([o, v]) => { (A.holdMax = A.holdMax || {})[o] = Math.max(A.holdMax[o] || 0, v); });
     if (X.orMatch) { A.orMatch.qty += X.orMatch.qty || 0; A.orMatch.totals.all += Object.values(X.orMatch.totals || {}).reduce((x, y) => x + y, 0); }
   }
   return n ? A : null;
@@ -4647,7 +4648,7 @@ function reportHTML(a, m, A) {
 function reportHead(a, m) { return `<span class="lg">${LOGO_SVG}</span><div><div class="rpttitle">Audit report · ${esc(a.name)} · ${esc(MLL(m))}</div><div class="note">${esc(a.Platform || 'eBay')}${a.Seller ? ' · ' + esc(a.Seller) : ''} · ${esc(stamp())}</div></div>`; }
 function rptOn() {
   if (S.view !== 'audit' || !acctById(S.acct) || !S.month) return false; const a = acctById(S.acct), A = getAudit(S.acct, S.month); if (!A || A.error || !A.sums) return false;
-  let h = ''; try { h = reportHTML(a, S.month, A); } catch (e) { logErr(e, 'report'); return false; }
+  let h = ''; try { h = A.kind === 'ebay' ? reportAcct(a) : null; } catch (e) { logErr(e, 'report'); h = null; } if (!h) { try { h = reportHTML(a, S.month, A); } catch (e) { logErr(e, 'report'); return false; } }
   let el = $('#rpt'); if (!el) { el = document.createElement('div'); el.id = 'rpt'; document.body.appendChild(el); } el.innerHTML = h; document.body.classList.add('rptmode'); return true;
 }
 function rptOff() { document.body.classList.remove('rptmode'); const el = $('#rpt'); if (el) el.remove(); }
@@ -4655,5 +4656,131 @@ function rptOff() { document.body.classList.remove('rptmode'); const el = $('#rp
 ACT.print = () => { if (rptOn()) { const done = () => { rptOff(); window.removeEventListener('afterprint', done); }; window.addEventListener('afterprint', done); setTimeout(() => window.print(), 80); setTimeout(done, 90000); } else _print(); };
 window.addEventListener('beforeprint', () => { if (!document.body.classList.contains('rptmode')) rptOn(); });
 window.addEventListener('afterprint', () => { rptOff(); });
+
+/* v3.4 — Seller Hub check done the way a hand audit does it: Seller Hub "total sales" is after refunds, claims and money still held;
+   "quantity sold" leaves out orders that had a hold; the postage-label line is explained by exact matching labels. */
+const _shotCompare31 = shotCompare;
+shotCompare = function (A, s) {
+  const rows = _shotCompare31(A, s); const B = rows.many ? aggAudit(shotAcctOf(s), s.from, s.to) : A; if (!B || !B.sums) return rows;
+  const z = k => B.sums[k] || 0, ords = B.orders || [];
+  const hs = new Set(B.holdOrders || []); const sd = new Map(); ords.forEach(o => { if (hs.has(o.order) && o.qty > 0 && o.date) sd.set(o.order, o); });
+  const rfd = new Set(ords.filter(o => (o.refund || 0) < 0).map(o => o.order)); const cand0 = [...sd.values()], candP = cand0.filter(o => !rfd.has(o.order));
+  const cand = (candP.length ? candP : cand0).sort((x, y) => (((B.holdMax || {})[y.order] || 0) / Math.max(1, y.gross)) - (((B.holdMax || {})[x.order] || 0) / Math.max(1, x.gross)));
+  const pick = (items, val, target, must) => { for (let n = 1; n <= 4; n++) { let hit = null; const go = (i, left, cur) => { if (hit) return; if (cur.length === n) { if (left === 0 && must.every(m => cur.includes(m))) hit = cur.slice(); return; } for (let j = i; j < items.length; j++) { cur.push(items[j]); go(j + 1, left - val(items[j]), cur); cur.pop(); } }; go(0, target, []); if (hit) return hit; } return []; };
+  const qr = rows.find(r => r.isQty); let hSet = cand;
+  if (qr && qr.theirs != null) { const dq = Math.round((qr.ours - qr.theirs) / 100); const openH = cand.filter(o => ((B.holdAmt || {})[o.order] || 0) < 0); hSet = dq > 0 ? pick(cand, o => o.qty, dq, openH) : []; if (!hSet.length && dq > 0) hSet = pick(cand0, o => o.qty, dq, []); }
+  const hUnits = hSet.reduce((x, o) => x + o.qty, 0);
+  const labs = (B.labels || []).filter(l => l.order && l.amt > 0);
+  const byLabel = Object.fromEntries(SHOT_FIELDS.map(([k, l]) => [l, k]));
+  const sh = rows.find(r => byLabel[r.k] === 'costs'), pt = rows.find(r => byLabel[r.k] === 'post');
+  let skip = []; const dc = sh && sh.theirs != null ? sh.ours - sh.theirs : 0;
+  if (sh && dc > 5 && (!pt || pt.ours - pt.theirs === dc)) skip = pick(labs, l => l.amt, dc, []);
+  const skipAmt = skip.reduce((x, l) => x + l.amt, 0), notes = [];
+  rows.forEach(r => {
+    const k = byLabel[r.k], tol = k === 'cred' || k === 'costs' ? 100 : 5; let moved = null;
+    if (k === 'sales') { const exp = z('gross') + z('refunds') + z('claims') + z('disputes') + z('holds'); moved = exp - r.ours; r.ours = exp; notes.push(`Sales: ${fmt(z('gross'))} sold − ${fmt(-z('refunds'))} refunds − ${fmt(-z('claims') - z('disputes'))} claims${z('holds') ? ` − ${fmt(-z('holds'))} still held` : ''} = ${fmt(exp)} (Seller Hub shows sales after refunds, claims and money on hold).`); }
+    if (k === 'qty' && hUnits) { r.ours = r.ours - hUnits * 100; notes.push(`Quantity: ${r.ours / 100 + hUnits} sold − ${hUnits} units of ${hSet.length} orders that had an eBay hold (${hSet.map(o => o.order + ' ' + o.qty + (o.qty > 1 ? ' units' : ' unit')).join(', ')}) = ${r.ours / 100}.`); }
+    if ((k === 'costs' || k === 'post') && skipAmt) { r.ours -= skipAmt; if (k === 'costs') notes.push(`Selling costs: ${fmt(r.ours + skipAmt)} − ${fmt(skipAmt)} = ${fmt(r.ours)}. The postage labels of ${skip.map(l => l.order + ' ' + fmt(l.amt)).join(' and ')} are not in the Seller Hub figure. Check why.`); }
+    r.d = r.ours - r.theirs; r.bad = Math.abs(r.d) > tol;
+  });
+  const net = rows.find(r => r.k === 'Net sales (after selling costs)'), sl = rows.find(r => byLabel[r.k] === 'sales'); if (net && sl && sh) { net.ours = sl.ours - sh.ours; net.d = net.ours - net.theirs; net.bad = Math.abs(net.d) > 100; notes.push(`Net: ${fmt(sl.ours)} − ${fmt(sh.ours)} = ${fmt(net.ours)}.`); }
+  rows.notes = notes; rows.skip = skip; return rows;
+};
+
+/* v3.4 — the audit report of an account (all its months), built the way the hand audit was done. */
+function acctMonths(a) {
+  const L = allAudits().filter(x => x.a.id === a.id && x.A && x.A.sums && x.A.kind === 'ebay').sort((x, y) => x.m < y.m ? -1 : 1);
+  return L.length > 6 ? L.slice(-6) : L;
+}
+// profit when every order is counted in the month it was SOLD (refunds, fees and AliExpress refunds of the order follow it)
+function saleView(L) {
+  const by = new Map();
+  L.forEach(({ m, A }) => (A.orders || []).forEach(o => { let x = by.get(o.order); if (!x) { x = { net: 0, cost: 0, ref: 0, sm: null }; by.set(o.order, x); } x.net += (o.net || 0) + (o.ads || 0) + (o.post || 0); if (o.date && o.qty > 0) { x.sm = o.date.slice(0, 7); x.cost = o.cost || 0; x.ref = o.aeRef || 0; } }));
+  const out = {}; L.forEach(({ m, A }) => { const on = (A.orders || []).reduce((s, o) => s + (o.net || 0) + (o.ads || 0) + (o.post || 0), 0); out[m] = (out[m] || 0) + (A.sums.net - on); const extra = (A.supplierRefunds || 0) - (A.orders || []).reduce((s, o) => s + (o.aeRef || 0), 0); if (extra) out[m] += extra; });
+  by.forEach(x => { if (!x.sm) return; if (out[x.sm] === undefined) out[x.sm] = 0; out[x.sm] += x.net - x.cost + x.ref; });
+  const orphan = {}; by.forEach((x, k) => { if (!x.sm) orphan[k] = x.net; });
+  return { out, orphan };
+}
+function reportAcct(a) {
+  const L = acctMonths(a); if (!L.length) return null;
+  const P = v => fmt(v), N = v => (v < 0 ? '-' : '') + '£' + (Math.abs(v) / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const ms = L.map(x => x.m), z = (A, k) => (A.sums[k] || 0);
+  const colv = A => { const fo = -(z(A, 'fvf') + z(A, 'reg') + z(A, 'inad') + z(A, 'below') + z(A, 'intl')), ads = -(z(A, 'ads') - z(A, 'adsCredit')), cr = z(A, 'feeCredits') + z(A, 'fvfCreditStandalone'), ins = -z(A, 'insertion'), sub = -z(A, 'subscription'), po = -z(A, 'postage');
+    const known = z(A, 'gross') + z(A, 'refunds') + z(A, 'claims') + z(A, 'disputes') + fo + cr + ads + ins + sub + po, other = z(A, 'net') - known;
+    return { orders: z(A, 'orders'), units: z(A, 'units'), gross: z(A, 'gross'), refunds: z(A, 'refunds'), claims: z(A, 'claims') + z(A, 'disputes'), fo, cr, ads, ins, sub, po, other, net: z(A, 'net'), cogs: -(A.cogs || 0), aeRef: A.supplierRefunds || 0, profit: A.profit || 0 }; };
+  const C = L.map(x => colv(x.A)), T = {}; Object.keys(C[0]).forEach(k => T[k] = C.reduce((s, c) => s + c[k], 0));
+  const sv = saleView(L), saleP = ms.map(m => sv.out[m] || 0), saleT = saleP.reduce((x, y) => x + y, 0);
+  const rv = reviewModel(), rows = rv.rows.filter(r => r.a.id === a.id && ms.includes(r.m));
+  const noCost = []; rows.forEach(r => r.noCost.forEach(o => noCost.push(o))); noCost.sort((x, y) => x.date < y.date ? -1 : 1);
+  const allO = L.flatMap(x => x.A.orders || []), sold = allO.filter(o => o.qty > 0 && o.date);
+  const holdOpen = {}; L.forEach(x => Object.entries(x.A.holdAmt || {}).forEach(([o, v]) => { holdOpen[o] = (holdOpen[o] || 0) + v; })); Object.keys(holdOpen).forEach(o => { if (holdOpen[o] >= 0) delete holdOpen[o]; });
+  const holdT = Object.values(holdOpen).reduce((x, y) => x + y, 0);
+  const lastA = L[L.length - 1].A, heldPay = lastA.cash ? lastA.cash.held : 0, cashBad = L.some(x => x.A.cash && Math.abs(x.A.cash.diff) > 1), mathBad = L.reduce((s, x) => s + (x.A.netFail || 0), 0), blocks = L.reduce((s, x) => s + (x.A.blocks || 0), 0);
+  const nPay = L.reduce((s, x) => s + z(x.A, 'nPayouts'), 0), payT = L.reduce((s, x) => s + z(x.A, 'payouts'), 0);
+  const or = L.map(x => x.A.orMatch).filter(Boolean), inT = or.reduce((s, o) => s + (o.inTxn || 0), 0), inO = or.reduce((s, o) => s + (o.inOr || 0), 0), onlyT = or.reduce((s, o) => s + (o.onlyTxn || []).length, 0), onlyO = or.reduce((s, o) => s + (o.onlyOr || []).length, 0);
+  // Seller Hub screenshots: the ones that cover these months
+  const shots = []; const seenS = new Set(); ms.forEach(m => { const k = a.id + '|' + m, s = K.shots[k]; if (!s || seenS.has(s)) return; seenS.add(s); const A = L.find(x => x.m === m).A; let c = []; try { c = shotCompare(A, s); } catch (e) { } shots.push({ s, c, m }); });
+  const aeAll = []; activeParts('ae_orders').forEach(p => (p.rows || []).forEach(r => aeAll.push(r))); const aeMin = aeAll.map(r => r.date).filter(Boolean).sort()[0] || null;
+  const aeSold = sold.filter(o => o.costSrc === 'AliExpress export').length, aeUsed = L.reduce((s, x) => s + ((x.A.aeMatch && x.A.aeMatch.used) || 0), 0);
+  const stmAny = rows.some(r => r.stm);
+  const nNo = noCost.length, aeEarly = aeMin ? noCost.filter(o => o.date < aeMin).length : 0;
+  const open = Object.entries(holdOpen), extra = (rv.ae.accts === 1 ? rv.ae.extra : []).filter(r => r.date >= ms[0] + '-01' && r.date <= ms[ms.length - 1] + '-31' || !r.date);
+  const bad = nNo > 0 || onlyT + onlyO > 0 || mathBad > 0 || cashBad, partial = bad || extra.length || open.length || !stmAny;
+  const verdict = `${mathBad || cashBad || onlyT + onlyO ? 'The eBay side has mistakes.' : 'The eBay side is clean and every number ties to the penny.'} ${partial ? 'The audit is not complete yet: ' + [nNo ? `${nNo} order${nNo > 1 ? 's have' : ' has'} no cost` : '', extra.length ? `${extra.length} AliExpress order${extra.length > 1 ? 's belong' : ' belongs'} to no eBay order` : '', open.length ? `${N(-holdT)} is on hold` : '', !stmAny ? 'no bank statement was supplied' : ''].filter(Boolean).join(', ') + '.' : 'Nothing is open.'}`;
+  const first = MLL(ms[0]), last = MLL(ms[ms.length - 1]);
+  const srcs = ['eBay Transaction report', 'eBay Orders report'].concat(aeAll.length ? ['AliExpress orders export'] : []).concat(stmAny ? ['bank statement'] : []).concat(shots.length ? [`${shots.length} Seller Hub screenshot${shots.length > 1 ? 's' : ''}`] : []);
+  const rowTr = (l, f, b) => `<tr${b ? ' class="rb"' : ''}><td>${l}</td>${C.map(c => `<td class="r">${f(c)}</td>`).join('')}${C.length > 1 ? `<td class="r">${f(T)}</td>` : ''}</tr>`;
+  const SV = ms.map((m, i) => `<td class="r">${N(saleP[i])}</td>`).join('');
+  const lines = [['Orders', c => String(c.orders)], ['Units sold', c => String(c.units)], null, ['Sales (buyers paid)', c => N(c.gross)], ['Refunds', c => N(c.refunds)], ['Claims', c => N(c.claims)], null, ['Fees on orders', c => N(c.fo)], ['Fee credits on refunds and claims', c => N(c.cr)], ['Promoted Listings (net of credits)', c => N(c.ads)], null, ['Insertion fees', c => N(c.ins)], ['Shop subscription', c => N(c.sub)], null, ['Postage labels', c => N(c.po)]];
+  if (Math.abs(T.other) > 1 || C.some(c => Math.abs(c.other) > 1)) lines.push(['Other eBay lines', c => N(c.other)]);
+  lines.push(['eBay net (excl. holds)', c => N(c.net), 1], ['Cost of goods (AliExpress price)', c => N(c.cogs)], null, ['AliExpress refunds received', c => N(c.aeRef)], null, ['Profit (payment-month view)', c => N(c.profit), 1]);
+  const mt = lines.map(l => l ? rowTr(l[0], l[1], l[2]) : '<tr class="sp"><td colspan="' + (C.length + 2) + '"></td></tr>').join('') + `<tr class="rb"><td>Profit (sale-month view)</td>${SV}${C.length > 1 ? `<td class="r">${N(saleT)}</td>` : ''}</tr>`;
+  // why a payment-month loss
+  let why = ''; const lossI = C.findIndex(c => c.profit < 0 || Math.abs(c.profit - saleP[C.indexOf(c)]) > 100);
+  if (C.length > 1) { const earlierRef = L.map(({ m, A }) => (A.orders || []).filter(o => o.refund - (o.claim || 0) < 0 && !(o.date && o.date.slice(0, 7) === m)).reduce((s, o) => s - (o.refund - (o.claim || 0)), 0)); const k = C.findIndex(c => c.profit < 0); if (k >= 0) why = `<b>Why ${MLL(ms[k])} looks like a loss.</b> By payment month ${MLL(ms[k])} shows ${N(C[k].profit)}. ${N(earlierRef[k])} of the ${N(-C[k].refunds)} refunds paid in ${MLL(ms[k])} are for orders sold in an earlier month. `; else why = ''; why += `Counting every order in the month it was sold, profit is: ${ms.map((m, i) => MLL(m).split(' ')[0] + ' ' + N(saleP[i])).join(', ')} (total ${N(saleT)}${Math.abs(saleT - T.profit) <= 1 ? ', same total' : ''}). Use the sale-month view when you share profit with the account owner, and the payment-month view only for cash.`; }
+  // checks
+  const chk = [];
+  chk.push(['Orders report against Transaction report', or.length ? (onlyT + onlyO ? '○ differs' : '✓ identical') : '○ Orders report missing', or.length ? `${Math.min(inT, inO)} orders in both; ${onlyT} only in the Transaction report, ${onlyO} only in the Orders report.` : 'Add the eBay Orders report to prove every order.']);
+  chk.push(['eBay maths on every order', mathBad ? `○ ${mathBad} do not add up` : `✓ all add up`, `Sale − fees = net on every order line (${blocks} lines). Fees: final value ${N(L.reduce((s, x) => s + z(x.A, 'fvf'), 0))}, regulatory ${N(L.reduce((s, x) => s + z(x.A, 'reg'), 0))}${L.some(x => z(x.A, 'intl') || z(x.A, 'inad') || z(x.A, 'below')) ? ', plus international / performance fees' : ', no international or "not as described" fees'}.`]);
+  chk.push(['Payouts and cash', cashBad ? '○ does not balance' : '✓ balances to £0.00', `${nPay} payout${nPay === 1 ? '' : 's'} paid ${N(payT)}; ${N(heldPay)} of the latest month is not paid yet. Every month: earlier money + net − holds − payouts − paid later − not yet paid = £0.00.`]);
+  if (shots.length) { const bads = shots.flatMap(x => x.c.filter(r => r.bad)); chk.push([`Seller Hub screenshot${shots.length > 1 ? 's' : ''}`, bads.length ? `○ ${bads.length} line${bads.length > 1 ? 's differ' : ' differs'}` : '✓ every line explained', (shots[0].c.notes || []).join(' ') + (bads.length ? ' Lines that differ: ' + bads.map(r => r.k).join(', ') + '.' : '')]); } else chk.push(['Seller Hub screenshot', '○ not supplied', 'Optional extra proof.']);
+  chk.push(['AliExpress costs', aeAll.length ? `${sold.some(o => o.cost == null) ? '○' : '✓'} ${sold.filter(o => o.cost != null).length} of ${sold.length} found` : '○ not supplied', aeAll.length ? `Matched by buyer postcode, name and date. Used cost ${N(-T.cogs)}, AliExpress refunds received ${N(T.aeRef)}.` : 'Costs came from the VA sheet or stock list, or are missing.']);
+  chk.push(['Bank statement', stmAny ? '✓ supplied' : '○ not supplied', stmAny ? 'Payouts are ticked against the bank.' : 'The bank side cannot be proven without the statement.']);
+  const ct = `<table class="rt"><thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead><tbody>${chk.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join('')}</tbody></table>`;
+  // mistakes
+  const M = [];
+  if (nNo) M.push(`<b>${nNo} sold order${nNo > 1 ? 's have' : ' has'} no ${aeAll.length ? 'AliExpress ' : ''}cost</b> (section 4).${aeEarly ? ` ${aeEarly} of them were sold before ${aeMin}: the AliExpress export starts then, so earlier purchases are missing. Export AliExpress again from the first day of ${first}.` : ''}`);
+  if (extra.length) M.push(`<b>${extra.length} AliExpress order${extra.length > 1 ? 's match' : ' matches'} no eBay order</b> (section 5), ${N(extra.reduce((s, r) => s + (r.amount || 0), 0))} of cost. Either the eBay sale is not in these files, it was cancelled, or it belongs to another account.`);
+  open.forEach(([o, v]) => { const ord = allO.find(x => x.order === o); M.push(`<b>${N(-v)} is held by eBay</b> on order ${o}${ord && ord.date ? ` (sold ${ord.date}, ${ord.qty} item${ord.qty > 1 ? 's' : ''})` : ''}. Open it in eBay Resolution Centre. It is counted as sales but not as money received.`); });
+  const MO = new Map(); allO.forEach(o => { let x = MO.get(o.order); if (!x) { x = { order: o.order, sold: null, claim: 0, ref: 0, aeRef: 0 }; MO.set(o.order, x); } if (o.qty > 0 && o.date) x.sold = o; x.claim += o.claim || 0; x.ref += (o.refund || 0) - (o.claim || 0); x.aeRef += o.aeRef || 0; });
+  const cl = [...MO.values()].filter(x => x.claim < 0); if (cl.length) M.push(`<b>Claims:</b> ${cl.map(x => `${x.order} (${N(-x.claim)}${x.aeRef ? ', AliExpress refunded part of the cost' : x.sold && x.sold.cost == null ? ', no AliExpress cost found' : ''})`).join(', ')}.`);
+  ms.forEach((m, i) => { const so = sold.filter(o => o.date.slice(0, 7) === m), rf = so.filter(o => { const x = MO.get(o.order); return x && (x.ref < 0 || x.claim < 0); }), rate = so.length ? Math.round(1000 * rf.length / so.length) / 10 : 0; if (so.length >= 20 && rate >= 10) { const cost = rf.reduce((s, o) => s + (o.cost || 0), 0), back = rf.reduce((s, o) => s + ((MO.get(o.order) || {}).aeRef || 0), 0); const cnt = {}; rf.forEach(o => { const t = (o.title || '').split(' ').slice(0, 3).join(' '); cnt[t] = (cnt[t] || 0) + 1; }); const top = Object.entries(cnt).sort((x, y) => y[1] - x[1])[0]; M.push(`<b>Refunds are high in ${MLL(m).split(' ')[0]}:</b> ${rf.length} of ${so.length} orders (${rate}%) were refunded or claimed. The AliExpress cost of those goods is ${N(cost)} and ${N(back)} came back from AliExpress.${top && top[1] > 2 ? ` Look at the products behind the returns (${esc(top[0])}: ${top[1]} orders).` : ''}`); } });
+  const adsG = L.reduce((s, x) => s + z(x.A, 'ads'), 0), adsC = L.reduce((s, x) => s + z(x.A, 'adsCredit'), 0); if (adsG) M.push(`<b>Promoted Listings:</b> ${N(adsG)} gross (net ${N(adsG - adsC)} after ${N(adsC)} credits), ${(100 * adsG / (T.gross || 1)).toFixed(1)}% of sales, against a profit of ${N(saleT)}. Check whether the ads pay for themselves.`);
+  rows.forEach(r => r.F.filter(f => f.s === 'bad' && !/no cost/.test(f.t) && !/Orders report/.test(f.t)).forEach(f => M.push(esc(MLL(r.m)) + ': ' + esc(f.t))));
+  const costTbl = nNo ? `<table class="rt"><thead><tr><th>eBay order</th><th>Sold</th><th>Item</th><th class="r">Sale</th><th>Note</th></tr></thead><tbody>${noCost.map(o => `<tr><td>${esc(o.order)}</td><td>${esc(o.date)}</td><td>${esc((o.title || '').slice(0, 48))}</td><td class="r">${N(o.gross)}</td><td>No cost found</td></tr>`).join('')}</tbody></table>` : '<p class="note">Every sold order has a cost.</p>';
+  const fullRef = sold.filter(o => o.rpct >= 99 && o.cost == null).map(o => o.order);
+  const aeTbl = extra.length ? `<table class="rt"><thead><tr><th>AliExpress order</th><th>Date</th><th>Buyer</th><th>Postcode</th><th class="r">Cost</th></tr></thead><tbody>${extra.map(r => `<tr><td>${esc(r.ae)}</td><td>${esc(r.date || '')}</td><td>${esc(r.buyer || '')}</td><td>${esc((r.pc || '').toUpperCase())}</td><td class="r">${N(r.amount || 0)}</td></tr>`).join('')}</tbody></table>` : '<p class="note">None: every AliExpress order is used as the cost of an eBay order.</p>';
+  const next = []; if (aeEarly) next.push(`Send the AliExpress export from the first day of ${first} so the ${nNo} order${nNo > 1 ? 's get' : ' gets'} a cost.`); else if (nNo) next.push(`Add the cost of the ${nNo} order${nNo > 1 ? 's' : ''} without cost (AliExpress export, VA sheet or stock list).`);
+  if (!stmAny) next.push('Send the bank (or Wise) statement so every payout is ticked against the bank.'); open.forEach(([o]) => next.push(`Open eBay Resolution Centre for order ${o}.`)); if (extra.length) next.push(`Decide for the ${extra.length} unmatched AliExpress order${extra.length > 1 ? 's' : ''}: add as cost of another order, or treat as stock or loss.`);
+  next.push(next.length ? `After these, profit can be shared with the account owner. Until then treat the profit as provisional (sale-month view: ${ms.map((m, i) => MLL(m).split(' ')[0] + ' ' + N(saleP[i])).join(', ')}).` : 'Nothing is open: profit can be shared with the account owner (sale-month view).');
+  const li = A => '<ul class="rptsteps">' + A.map(x => `<li>${x}</li>`).join('') + '</ul>';
+  const tile = (k, v) => `<div class="rtile"><span>${k}</span><b>${v}</b></div>`;
+  const cogsNet = -T.cogs - T.aeRef;
+  const shotCmp = '';
+  return `<div class="rptwm">${LOGO_SVG}</div><div class="rpthead"><span class="lg">${LOGO_SVG}</span><div><div class="rpttitle">Full audit · ${esc(a.name)}${a.Seller ? ' (eBay seller ' + esc(a.Seller) + ')' : ''} · ${esc(first === last ? first : first.split(' ')[0] + ' to ' + last)}</div><div class="note">Prepared ${esc(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))} from the original files (${esc(srcs.join(', '))}).</div></div></div>
+  <div class="rptv ${partial ? 'warn' : 'ok'}"><b>Result: ${esc(verdict)}</b></div>
+  <div class="rtiles">${tile('Sales (buyers paid)', N(T.gross))}${tile('eBay net (excl. hold)', N(T.net))}${tile('Cost of goods', N(cogsNet))}${tile('Profit so far', N(T.profit))}${tile('Orders · units', T.orders + ' · ' + T.units)}</div>
+  ${nNo || open.length ? `<p class="note">Profit is not final:${nNo ? ` ${nNo} sold order${nNo > 1 ? 's have' : ' has'} no cost yet (section 4)` : ''}${nNo && open.length ? ' and' : ''}${open.length ? ` ${N(-holdT)} of ${open.length === 1 ? 'one order is' : open.length + ' orders is'} still held by eBay` : ''}.</p>` : ''}
+  <h2 class="rh">1. Month by month</h2><table class="rt"><thead><tr><th></th>${ms.map(m => `<th class="r">${esc(MLL(m).split(' ')[0])}</th>`).join('')}${C.length > 1 ? '<th class="r">Total</th>' : ''}</tr></thead><tbody>${mt}</tbody></table>
+  ${why ? `<div class="rbox">${why}</div>` : ''}
+  <h2 class="rh">2. What was checked and what it showed</h2>${ct}
+  <h2 class="rh">3. Mistakes and gaps found</h2>${M.length ? li(M) : '<p class="note">No mistake or gap found.</p>'}
+  <h2 class="rh">4. Orders without a cost (${nNo})</h2>${costTbl}${fullRef.length ? `<p class="note">Also ${fullRef.length} fully refunded order${fullRef.length > 1 ? 's have' : ' has'} no AliExpress purchase (nothing was bought, so no cost): ${fullRef.join(', ')}.</p>` : ''}
+  <h2 class="rh">5. AliExpress orders with no eBay order (${extra.length})</h2>${aeTbl}
+  <h2 class="rh">6. What to do next</h2>${li(next)}
+  <p class="rptfoot">${esc(stamp())} · Product cost comes from the AliExpress export, VA sheet or stock list; eBay does not hold it.</p>`;
+}
+
+{ const st = document.createElement('style'); st.textContent = `@media print{body.rptmode #rpt{position:relative}.rptwm{position:fixed;left:0;right:0;top:30%;height:46vh;display:flex;justify-content:center;opacity:.1;z-index:0;pointer-events:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}.rptwm svg{height:100%;width:auto}#rpt .rpthead,#rpt .rptv,#rpt .rtiles,#rpt table,#rpt ul,#rpt .rbox,#rpt p,#rpt h2{position:relative;z-index:1}#rpt .rtiles{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:8px 0}#rpt .rtile{border:1px solid #bbb;border-radius:6px;padding:6px 8px}#rpt .rtile span{display:block;font-size:9px;color:#555}#rpt .rtile b{font-size:15px}#rpt table.rt{border-collapse:collapse;width:100%;margin:4px 0}#rpt table.rt td,#rpt table.rt th{border-bottom:1px solid #ddd;padding:3px 5px;text-align:left;vertical-align:top}#rpt table.rt th{background:#eef2f8}#rpt table.rt td.r,#rpt table.rt th.r{text-align:right}#rpt tr.rb td{font-weight:700;background:#f6f8fb}#rpt tr.sp td{padding:1px;border:0}#rpt .rbox{border:1px solid #bbb;border-radius:6px;padding:8px 10px;margin:8px 0;background:#fff8e1}#rpt .rptv.ok{background:#e6f4ea}#rpt .rptv.warn{background:#fff4d6}#rpt tr{break-inside:avoid}}`; document.head.appendChild(st); }
 </script>
 </body></html>
