@@ -1014,7 +1014,7 @@ if (typeof module !== 'undefined') module.exports = AD;
 
 /* Audit Desk — data layer: IndexedDB storage, register, file intake, audits, guide steps */
 'use strict';
-const APPV = '3.0.0';
+const APPV = '3.1.0';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR = { GBP: '£', USD: '$', EUR: '€', AUD: 'A$', CAD: 'C$', PKR: 'Rs ', INR: '₹', AED: 'AED ', JPY: '¥' };
@@ -1745,11 +1745,11 @@ const T = {};
 T.summary = (a, m, A) => {
   if (A.kind === 'market') return `<div class="grid"><div class="card tile"><div class="k">Sales</div><div class="v">${fmt(A.sums.gross)}</div><div class="note">${A.sums.orders} orders · ${A.sums.units} units</div></div><div class="card tile"><div class="k">Refunds</div><div class="v">${fmt(A.sums.refunds)}</div></div><div class="card tile"><div class="k">${esc(A.platform)} fees</div><div class="v">${fmt(-A.sums.fees)}</div></div><div class="card tile"><div class="k">Net from ${esc(A.platform)}</div><div class="v">${fmt(A.sums.net)}</div>${A.sums.otherN ? `<div class="note">incl. ${A.sums.otherN} account lines ${fmt(A.sums.other)}</div>` : ''}</div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div>${A.nCostMissing ? `<div class="note">${A.nCostMissing} orders without cost</div>` : ''}</div><div class="card tile hi"><div class="k">Profit</div><div class="v">${fmt(A.profit)}</div></div><div class="card tile"><div class="k">Paid out to the bank</div><div class="v">${fmt(A.sums.payouts)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m], m)}</div><div class="card note">${esc(A.platform)} settlement: every line of ${esc((A.files || []).join(', '))} is used. Cost comes from the VA sheet (by order ID) or the stock cost list (by SKU). Open the Orders tab for every order.</div>`;
   const z = k => A.sums[k] || 0;
-  const checks = [[A.netFail === 0, `eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}`], [Math.abs(A.cash.diff) <= 1, `Cash balances: difference ${fmt(A.cash.diff)}`], [Math.abs(A.plCheck) <= 50, `Profit & loss ties to eBay net${A.plCheck ? ` (${fmt(A.plCheck)} currency rounding)` : ''}`], [!A.orMatch || A.orMatch.pct === 100, A.orMatch ? `Orders report matches ${A.orMatch.pct}% (${A.orMatch.inOr} orders)` : 'Orders report not uploaded yet'], [!A.nCostMissing, A.nCostMissing ? `${A.nCostMissing} orders have no cost yet` : `Cost found for all ${A.costKnown} orders`]];
+  const checks = [[A.netFail === 0, `eBay maths checked on ${A.blocks} order lines: ${A.netFail ? A.netFail + ' do not add up' : 'all add up'}`], [Math.abs(A.cash.diff) <= 1, `Cash balances: difference ${fmt(A.cash.diff)}`], [Math.abs(A.plCheck) <= 50, `Profit & loss ties to eBay net${A.plCheck ? ` (${fmt(A.plCheck)} currency rounding)` : ''}`], [!A.orMatch || A.orMatch.pct === 100, A.orMatch ? `Orders report matches ${A.orMatch.pct}% (${A.orMatch.inOr} orders)` : 'Orders report not uploaded yet'], [!A.nCostMissing, A.nCostMissing ? `${A.nCostMissing} order${A.nCostMissing === 1 ? ' has' : 's have'} no cost yet` : `Cost found for all ${A.costKnown} orders`]];
   if (A.payMatch) checks.push([A.payMatch.found === A.payMatch.total, `Payouts found in bank: ${A.payMatch.found} of ${A.payMatch.total}`]);
   if (A.aeMatch) checks.push([A.aeMatch.hit === A.aeMatch.tried, `AliExpress costs found on card / bank: ${A.aeMatch.hit} of ${A.aeMatch.tried}`]);
   return `<div class="grid"><div class="card tile"><div class="k">Sales (gross)</div><div class="v">${fmt(z('gross'))}</div></div><div class="card tile"><div class="k">eBay net to you</div><div class="v">${fmt(z('net'))}</div></div><div class="card tile"><div class="k">Cost of goods</div><div class="v">${fmt(A.cogs)}</div></div><div class="card tile ${A.nCostMissing ? '' : 'hi'}"><div class="k">Profit${A.nCostMissing ? ' (not final)' : ''} ${help('Profit = eBay net for the month minus the cost of the orders sold in the month, plus AliExpress refunds that reached the card / bank this month. Payouts and money held do not change profit.')}</div><div class="v">${fmt(A.profit)}</div></div>${splitTiles(a, A.profit, K.locks[a.id + '|' + m], m)}<div class="card tile"><div class="k">Orders · units</div><div class="v">${z('orders')} · ${z('units')}</div></div><div class="card tile"><div class="k">Held by eBay</div><div class="v">${fmt(A.cash.held)}</div></div></div>
-  ${A.nCostMissing ? `<div class="check w">Profit is not final: ${A.nCostMissing} orders have no cost. <button class="btn sm" data-act="ofl" data-v="No cost found">Show them</button></div>` : ''}
+  ${A.nCostMissing ? `<div class="check w">Profit is not final: ${A.nCostMissing} order${A.nCostMissing === 1 ? ' has' : 's have'} no cost. <button class="btn sm" data-act="ofl" data-v="No cost found">Show them</button></div>` : ''}
   <div class="card"><h2>Checks</h2><div class="list">${checks.map(([ok, t]) => `<div class="li"><div class="ic i-${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'}</div><div class="grow">${esc(t)}</div></div>`).join('')}</div></div>`;
 };
 T.pnl = (a, m, A) => {
@@ -3334,11 +3334,11 @@ function auditScore(a, m, A) {
   add(20, A.netFail ? 1 - A.netFail / Math.max(1, A.blocks) : 1, A.netFail ? `${A.netFail} order lines in the eBay report do not add up` : 'eBay maths adds up on every order line');
   add(15, Math.abs(A.cash.diff) <= 1 ? 1 : 0, Math.abs(A.cash.diff) <= 1 ? 'Cash balances to the penny' : `Cash is out by ${fmt(A.cash.diff)}`);
   add(10, A.orMatch ? (A.orMatch.onlyTxn.length + A.orMatch.onlyOr.length ? 0.5 : 1) : 0, A.orMatch ? (A.orMatch.onlyTxn.length + A.orMatch.onlyOr.length ? 'Some orders are only in one report' : 'Orders report matches the Transaction report') : 'No Orders report yet', A.orMatch ? null : { act: 'pick', acct: a.id, month: m, label: 'Add it' });
-  const sold = A.costKnown + A.nCostMissing; add(20, sold ? A.costKnown / sold : 1, A.nCostMissing ? `${A.nCostMissing} orders have no cost` : 'Every sold order has a cost', A.nCostMissing ? { act: 'ofl', v: 'No cost found', label: 'Show them' } : null);
+  const sold = A.costKnown + A.nCostMissing; add(20, sold ? A.costKnown / sold : 1, A.nCostMissing ? `${A.nCostMissing} order${A.nCostMissing === 1 ? ' has' : 's have'} no cost` : 'Every sold order has a cost', A.nCostMissing ? { act: 'ofl', v: 'No cost found', label: 'Show them' } : null);
   add(10, A.payMatch ? A.payMatch.found / Math.max(1, A.payMatch.total) : 0, A.payMatch ? `${A.payMatch.found} of ${A.payMatch.total} payouts found in the bank / Wise` : 'No bank / Wise statement yet, so payouts are not proven', A.payMatch ? null : { act: 'pick', acct: a.id, month: m, label: 'Add it' });
   if (a.type !== 'Own stock') add(10, A.aeMatch && A.aeMatch.tried ? A.aeMatch.hit / A.aeMatch.tried : 0, A.aeMatch && A.aeMatch.tried ? `${A.aeMatch.hit} of ${A.aeMatch.tried} supplier costs found on the card statement` : 'Supplier costs are not checked against the card yet');
   const s = K.shots[a.id + '|' + m]; let sb = 0; try { sb = s ? shotCompare(A, s).filter(r => r.bad).length : 0; } catch (e) { }
-  add(5, s ? (sb ? 0.4 : 1) : 0, s ? (sb ? `${sb} screenshot numbers do not match` : 'Seller Hub screenshot matches') : 'No Seller Hub screenshot numbers');
+  add(5, s ? (sb ? 0.4 : 1) : 0, s ? (sb ? `${sb} screenshot number${sb === 1 ? ' does' : 's do'} not match` : 'Seller Hub screenshot matches') : 'No Seller Hub screenshot numbers');
   let open = 0; try { open = issuesAll().filter(i => i.acctId === a.id && i.month === m && isOpen(i) && i.sev === 'bad').length; } catch (e) { }
   add(10, open ? 0 : 1, open ? `${open} serious issue${open > 1 ? 's are' : ' is'} open` : 'No serious issue open', open ? { act: 'tab', t: 'issues', label: 'Show them' } : null);
   const W = C.reduce((x, c) => x + c.w, 0), G = C.reduce((x, c) => x + c.w * c.got, 0); const pct = Math.round(100 * G / W);
@@ -3346,7 +3346,7 @@ function auditScore(a, m, A) {
 }
 function scoreCard(a, m, A) {
   const sc = auditScore(a, m, A); if (!sc) return '';
-  return `<div class="card score s-${sc.cls}"><div class="row between"><h2>Audit score: ${sc.pct}% ${help('How sure the numbers are. Each check adds points: eBay maths, cash, both reports, a cost for every order, payouts in the bank, supplier costs on the card, the Seller Hub screenshot and no serious issue open. 90% and above is green.')}</h2><div class="bar" style="flex:1;max-width:260px;margin-left:12px"><i style="width:${sc.pct}%"></i></div></div><div class="list">${sc.C.map(c => `<div class="li"><div class="ic i-${c.got >= 0.999 ? 'ok' : c.got > 0 ? 'warn' : 'bad'}">${c.got >= 0.999 ? '✓' : '!'}</div><div class="grow">${esc(c.t)}</div><div class="note num">${Math.round(c.w * c.got)}/${c.w}</div>${c.fix ? fixBtn(c.fix) : ''}</div>`).join('')}</div></div>`;
+  return `<div class="card score s-${sc.cls}"><div class="row between"><h2>Audit score: ${sc.pct}% ${help('How sure the numbers are. Each check adds points: eBay maths, cash, both reports, a cost for every order, payouts in the bank, supplier costs on the card, the Seller Hub screenshot and no serious issue open. 90% and above is green.')}</h2><div class="bar" style="flex:1;max-width:260px;margin-left:12px"><i style="width:${sc.pct}%"></i></div></div><div class="list">${sc.C.map(c => `<div class="li"><div class="ic i-${c.got >= 0.999 ? 'ok' : c.got > 0 ? 'warn' : 'bad'}">${c.got >= 0.999 ? '✓' : '!'}</div><div class="grow">${esc(c.t)}</div><div class="note num">${scoreFmt(c.w, c.got)}/${c.w}</div>${c.fix ? fixBtn(c.fix) : ''}</div>`).join('')}</div></div>`;
 }
 const _tsum = T.summary;
 T.summary = (a, m, A) => (A && A.kind === 'ebay' ? scoreCard(a, m, A) : '') + _tsum(a, m, A) + expCard(a, m);
@@ -3819,8 +3819,8 @@ function auditStatus(a, m, A) {
   const valid = eb ? A.netFail === 0 : true;
   S.push({ k: 'valid', t: 'Data checked', ok: imp && valid, why: !imp ? 'Waiting for the files.' : valid ? 'Every line adds up.' : `${A.netFail} lines do not add up.` });
   const costOk = (A.nCostMissing || 0) === 0, cashOk = eb ? Math.abs(A.cash.diff) <= 1 : true, payOk = eb ? !!(A.payMatch && A.payMatch.found === A.payMatch.total) : false;
-  const recWhy = !cashOk ? `Cash is out by ${fmt(A.cash.diff)}.` : !costOk ? `${A.nCostMissing} orders have no cost.` : !payOk ? (eb ? 'Payouts are not all found on the bank / Wise statement.' : 'Payouts for this platform are not matched to a bank statement yet.') : 'Cash, costs and payouts agree.';
-  S.push({ k: 'rec', t: 'Money matched', ok: imp && valid && cashOk && costOk && payOk, why: imp ? recWhy : 'Waiting for the files.' });
+  const recWhy = !cashOk ? `Cash is out by ${fmt(A.cash.diff)}.` : !costOk ? `${A.nCostMissing} order${A.nCostMissing === 1 ? ' has' : 's have'} no cost.` : !payOk ? (eb ? 'Payouts are not all found on the bank / Wise statement.' : 'Payouts for this platform are not matched to a bank statement yet.') : 'Cash, costs and payouts agree.';
+  S.push({ k: 'rec', t: 'Cash, costs and payouts agree', ok: imp && valid && cashOk && costOk && payOk, why: imp ? recWhy : 'Waiting for the files.' });
   S.push({ k: 'exc', t: 'Issues dealt with', ok: imp && issuesN === 0, why: issuesN ? `${issuesN} issue${issuesN > 1 ? 's' : ''} still open${bad ? ` (${bad} serious)` : ''}.` : 'No open issue.' });
   const reviewed = !!rev || !!lock;
   S.push({ k: 'rev', t: 'Reviewed by a person', ok: reviewed, why: reviewed ? (rev ? `Reviewed by ${rev.by} on ${String(rev.at).slice(0, 10)}.` : 'Locked, so it was approved.') : 'Nobody has marked it as reviewed.' });
@@ -3945,7 +3945,7 @@ Object.assign(ACT, {
   rcUn: async el => { const a = acctById(S.acct), A = getAudit(a.id, S.month), { P, res } = reconFor(a, S.month, A), p = P[+el.dataset.i], x = res.matches.find(m => m.l.includes(p.id)); if (!x) return; const why = ($('#rcWhy') || {}).value || ''; await rcStore(st => { st.manual = st.manual.filter(y => !x.l.includes(y.l)); x.l.forEach(l => x.r.forEach(r => { if (!st.forbid.some(f => f.l === l && f.r === r)) st.forbid.push({ l, r }); })); rcEv(st, 'Unmatched', x.l.join('+'), x.r.join('+'), why); }); toast('Unmatched. It will not be matched to that bank line again.'); }
 });
 // the audit status uses the same matching
-(function () { const _as = auditStatus; auditStatus = function (a, m, A) { const st = _as(a, m, A); if (!st) return st; try { const rc = reconFor(a, m, A); const s = st.S.find(x => x.k === 'rec'); if (s && rc.P.length) { const proven = rc.res.summary.complete; const costOk = (A.nCostMissing || 0) === 0, cashOk = A.kind === 'ebay' ? Math.abs(A.cash.diff) <= 1 : true; s.ok = st.S[0].ok && st.S[1].ok && cashOk && costOk && proven; s.why = !cashOk ? `Cash is out by ${fmt(A.cash.diff)}.` : !costOk ? `${A.nCostMissing} orders have no cost.` : proven ? 'Cash, costs and payouts agree (payouts found in the bank).' : `${rc.res.summary.leftOnly + rc.res.summary.review} payouts are not proven in the bank yet (see Matches).`; let lv = 0; while (lv < st.S.length && st.S[lv].ok) lv++; st.level = lv; st.verified = st.S[0].ok && st.S[1].ok && st.S[2].ok && st.S[3].ok; } } catch (e) { } return st; }; })();
+(function () { const _as = auditStatus; auditStatus = function (a, m, A) { const st = _as(a, m, A); if (!st) return st; try { const rc = reconFor(a, m, A); const s = st.S.find(x => x.k === 'rec'); if (s && rc.P.length) { const proven = rc.res.summary.complete; const costOk = (A.nCostMissing || 0) === 0, cashOk = A.kind === 'ebay' ? Math.abs(A.cash.diff) <= 1 : true; s.ok = st.S[0].ok && st.S[1].ok && cashOk && costOk && proven; s.why = !cashOk ? `Cash is out by ${fmt(A.cash.diff)}.` : !costOk ? `${A.nCostMissing} order${A.nCostMissing === 1 ? ' has' : 's have'} no cost.` : proven ? 'Cash, costs and payouts agree (payouts found in the bank).' : `${rc.res.summary.leftOnly + rc.res.summary.review} payouts are not proven in the bank yet (see Matches).`; let lv = 0; while (lv < st.S.length && st.S[lv].ok) lv++; st.level = lv; st.verified = st.S[0].ok && st.S[1].ok && st.S[2].ok && st.S[3].ok; } } catch (e) { } return st; }; })();
 
 // v2.6 — team members get their own file with only their accounts (a real data boundary).
 // The owner's data file is never shared with a member. Their changes flow back to the owner (3-way merge, owner wins on conflict).
@@ -4332,5 +4332,109 @@ splitEditorHTML = function () { let h = _seh(); (S.sp || []).forEach((r, i) => {
 const _acctModal = acctModal;
 acctModal = function (id) { _acctModal(id); try { const c = $('#layer .acSite') && $('#layer .acSite').closest('.chips'); if (c && !c.querySelector('.addchip')) c.insertAdjacentHTML('beforeend', chipAddBtn('Site', 'acSite')); } catch (e) { } };
 Object.assign(HELPT, { anSave: 'Adds the new value. It shows at once in every dropdown and filter of that list.', anCancel: 'Closes this without adding.', chipAdd: 'Adds a new value to this list and ticks it.' });
+
+/* Audit Desk v3.1 — one importer for files AND Drive links (in the drop zone and in "Add it"),
+   links read at once into the chosen account/month, clearer summary/PDF, VA step only when needed. */
+function scoreFmt(w, got) { const v = w * got; if (got >= 0.999) return String(w); const r = Math.round(v * 10) / 10; const t = r >= w ? Math.floor(v * 10) / 10 : r; return Number.isInteger(t) ? String(t) : t.toFixed(1); }
+const LINK_RE = /https?:\/\/(?:drive|docs)\.google\.com\/[^\s"'<>]+/gi;
+const linksIn = t => { const L = String(t || '').match(LINK_RE) || []; const bare = String(t || '').split(/[\s,]+/).filter(x => /^[A-Za-z0-9_-]{25,}$/.test(x)); return [...new Set(L.concat(bare))]; };
+const LN = { busy: false, last: [] };
+function pendLinks(add) { let L = []; try { L = JSON.parse(localStorage.getItem('ad-pendlinks') || '[]'); } catch (e) { } if (add) { L = L.concat(add.filter(x => !L.some(y => y.l === x.l))); try { localStorage.setItem('ad-pendlinks', JSON.stringify(L)); } catch (e) { } } return L; }
+function pendClear() { try { localStorage.removeItem('ad-pendlinks'); } catch (e) { } }
+const lnErr = e => { const m = String(e && (e.message || e) || ''); return /404|not.?found/i.test(m) ? 'not_found' : /403|permission|forbidden|insufficient|denied/i.test(m) ? 'denied' : 'other'; };
+async function linkGo(text, hint, label) {
+  hint = hint || {}; const links = linksIn(text);
+  if (!links.length) { toast('No Google Drive link found in what you pasted.'); return; }
+  if (typeof IS_WEB !== 'undefined' && IS_WEB && !gwOk()) { pendLinks(links.map(l => ({ l, hint, label }))); toast('Sign in with Google once. The link is kept and is read right after you sign in.'); try { gwSignIn(); } catch (e) { } return; }
+  if (!DRV.mcp) { pendLinks(links.map(l => ({ l, hint, label }))); toast('Google Drive is not connected yet. The link is kept.'); return; }
+  if (LN.busy) { toast('Still reading the last link…'); return; }
+  LN.busy = true; closeLayer(); const out = [];
+  try {
+    for (const l of links) {
+      const id = driveId(l);
+      if (!id) { out.push({ name: l.slice(0, 70), msgs: [{ t: 'bad', m: 'This is not a Google Drive link. For Dropbox, OneDrive or WeTransfer, download the file and drop it here.' }] }); continue; }
+      toast('Opening the link…', null, 1500);
+      let meta = null, er = null; try { meta = pay(await gcall('get_file_metadata', { fileId: id, excludeContentSnippets: true })); } catch (e) { er = e; }
+      if (!meta || !meta.id) { const k = er ? lnErr(er) : 'denied'; out.push({ name: l.slice(0, 70), msgs: [{ t: 'bad', m: k === 'not_found' ? 'Google says this file does not exist (or the link is cut short). Copy the full link again.' : `No access yet. Ask the sender to share it with ${GW.email || 'your Google account'} (view is enough). The link is kept; press “Refresh” after that.` }] }); pendLinks([{ l, hint, label }]); continue; }
+      let r = roots().find(x => x.id === id); if (!r) { r = { id, name: meta.title || 'Drive link' }; roots().push(r); }
+      r.name = meta.title || r.name; r.fromLink = true; if (label) r.from = label; if (hint.acct) r.acct = hint.acct; if (hint.month) r.month = hint.month; r.added = r.added || new Date().toISOString(); r.bad = false;
+      await save('prefs'); DRV.only = id; DRV.hintMonth = hint.month || null; const before = S.results.length;
+      try { await driveSync(true); } finally { DRV.only = null; DRV.hintMonth = null; }
+      const got = S.results.length - before;
+      out.push({ name: (meta.title || 'Drive link') + (hint.acct && acctById(hint.acct) ? ' → ' + acctById(hint.acct).name : '') + (hint.month ? ' · ' + MLL(hint.month) : ''), msgs: [{ t: 'ok', m: got > 0 ? `Read at once. ${got} file${got > 1 ? 's' : ''} placed and audited (see below).` : (DRV.msg || 'Nothing new in it: every file was already read.') }] });
+    }
+  } finally { LN.busy = false; }
+  const keepLinks = new Set(out.filter(o => o.msgs[0].t === 'bad' && /No access/.test(o.msgs[0].m)).map(o => o.name)); if (!keepLinks.size) pendClear();
+  S.results = out.concat(S.results).slice(0, 40); log('Drive link read: ' + out.map(o => o.name).join(', ')); render();
+  if (out.some(o => o.msgs[0].t === 'ok')) toast('Done. Files are placed and the audits are updated.');
+}
+function linkBox(id, hint) {
+  return `<div class="linkbox" style="margin-top:10px"><div class="row" style="gap:6px;flex-wrap:wrap"><input class="in grow" id="${id}" style="min-width:200px" placeholder="…or paste a Google Drive link (file or folder) — it is read at once" autocomplete="off"><button class="btn pri" type="button" data-act="linkGo" data-in="${id}">Read link</button></div><div class="note">Works for a Google Sheet, Excel, CSV, PDF, picture or a whole folder, in any Drive, if it is shared with ${esc(GW.email || 'your Google account')}. The account and month chosen above are used; with “Find it from the file” the tool places each file itself.</div></div>`;
+}
+const _vadd12 = V.add;
+V.add = function () { const h = _vadd12.apply(this, arguments); return h.replace(/(<label class="drop"[\s\S]*?<\/label>)/, '$1' + linkBox('lnk12', null)); };
+linkCard = function () { return linksListCard(); };
+function hintNow() { return { acct: S.hint.acct || '', month: S.hint.month || '' }; }
+const _pick12 = pickFiles;
+pickFiles = function (hint) {
+  PICK = hint || {}; const ac = PICK.acct && acctById(PICK.acct), mo = PICK.month;
+  layer(`<h2>Add a file${ac ? ' for ' + esc(ac.name) : ''}${mo ? ' · ' + esc(MLL(mo)) : ''}</h2><p class="note">Choose a file from this device (on a phone, from Google Drive too), or paste a Google Drive link.</p><div class="row" style="margin:8px 0"><button class="btn pri" type="button" data-act="pickDev">Choose file</button></div>${linkBox('lnk12m', null)}`);
+  setTimeout(() => { const i = $('#lnk12m'); if (i) i.focus(); }, 50);
+};
+Object.assign(ACT, {
+  pickDev: () => { const h = PICK; closeLayer(); _pick12(h); },
+  linkGo: el => { const i = $('#' + el.dataset.in); if (!i || !i.value.trim()) { toast('Paste a Google Drive link first.'); return; } const h = el.dataset.in === 'lnk12m' ? Object.assign({}, PICK) : hintNow(); const v = i.value; i.value = ''; linkGo(v, h); }
+});
+HELPT.linkGo = 'Reads the pasted Google Drive link now and puts its files on the right account and month.'; HELPT.pickDev = 'Opens the file chooser of this device.';
+// paste a link anywhere on the Files screen (or into the link box) and it is read at once
+document.addEventListener('paste', ev => {
+  const t = (ev.clipboardData && ev.clipboardData.getData('text')) || ''; if (!linksIn(t).length) return;
+  const el = ev.target, isLink = el && (el.id === 'lnk12' || el.id === 'lnk12m');
+  if (!isLink && el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return;
+  if (!isLink && !(S.view === 'add' || $('#lnk12m'))) return;
+  ev.preventDefault(); const h = $('#lnk12m') ? Object.assign({}, PICK) : hintNow(); linkGo(t, h);
+});
+document.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target && (ev.target.id === 'lnk12' || ev.target.id === 'lnk12m') && ev.target.value.trim()) { ev.preventDefault(); const h = ev.target.id === 'lnk12m' ? Object.assign({}, PICK) : hintNow(); const v = ev.target.value; ev.target.value = ''; linkGo(v, h); } });
+document.addEventListener('drop', ev => { const dt = ev.dataTransfer; if (!dt || (dt.files && dt.files.length)) return; const t = dt.getData('text/uri-list') || dt.getData('text'); if (linksIn(t).length && ev.target.closest && ev.target.closest('#drop')) { ev.preventDefault(); ev.stopPropagation(); linkGo(t, hintNow()); } }, true);
+// the month typed in the link box reaches every file read from that link
+const _intake12 = intake;
+intake = async function (file, hint, path) { hint = Object.assign({}, hint || {}); if (DRV.hintMonth && !hint.month) hint.month = DRV.hintMonth; return _intake12.call(this, file, hint, path); };
+// links kept while signed out are read right after sign-in
+setInterval(() => { try { const P = pendLinks(); if (P.length && !LN.busy && DRV.mcp && (typeof IS_WEB === 'undefined' || !IS_WEB || gwOk())) { const g = P[0]; pendClear(); linkGo(P.map(x => x.l).join(' '), g.hint, g.label); } } catch (e) { } }, 4000);
+
+// ---- the VA sheet is only needed when some order has no cost ----
+const _steps12 = steps;
+steps = function (acctId, month) { const g = _steps12.apply(this, arguments); try { const A = g.A || getAudit(acctId, month), v = g.S.find(s => s.k === 'va'); if (v && !v.done && A && A.sums && A.costKnown > 0 && (A.nCostMissing || 0) === 0) { v.done = true; v.need = false; v.t = 'VA order sheet (not needed: every order already has a cost)'; const nx = g.S.find(s => !s.done && s.need) || g.S.find(s => !s.done); g.next = nx || null; } } catch (e) { } return g; };
+
+// ---- clearer summary / PDF ----
+function bridgeCard(a, m, A) {
+  if (!A || !A.sums || A.kind !== 'ebay') return '';
+  const z = k => A.sums[k] || 0, g = z('gross'), net = z('net'), ded = net - g;
+  const parts = [['Final value fees', z('fvf') + z('inad') + z('below')], ['Insertion', z('insertion')], ['Regulatory', z('reg')], ['International', z('intl')], ['Ads', z('ads')], ['Postage labels', z('postage')], ['Store subscription', z('subscription')], ['Other fees', z('otherFees')], ['Fee credits', -(z('feeCredits') + z('adsCredit') + z('fvfCreditStandalone'))], ['Refunds', -z('refunds')]].filter(x => x[1]);
+  const cogs = A.cogs || 0, profit = A.profit;
+  const row = (l, v, b) => `<tr><td${b ? ' style="font-weight:700"' : ''}>${l}</td><td class="num" style="text-align:right${b ? ';font-weight:700' : ''}">${fmt(v)}</td></tr>`;
+  const pct = g ? Math.round(1000 * net / g) / 10 : 0;
+  return `<div class="card"><h2>From sales to profit ${help('Every step between what buyers paid and what is left. If net is far below sales, the lines in between show why.')}</h2><div class="tw"><table><tbody>${row('Sales (buyers paid)', g, 1)}${row('Fees, refunds and other eBay deductions (total)', ded)}${parts.map(p => `<tr><td class="note" style="padding-left:18px">of which ${esc(p[0])}</td><td class="num note" style="text-align:right">${fmt(p[1])}</td></tr>`).join('')}${row('eBay net (' + pct + '% of sales)', net, 1)}${row('Cost of goods' + (A.nCostMissing ? ` (${A.nCostMissing} order${A.nCostMissing === 1 ? '' : 's'} without cost)` : ''), -cogs)}${row('Profit', profit, 1)}</tbody></table></div>${pct && pct < 70 ? '<p class="note">eBay net is under 70% of sales. Look at refunds, ads and postage above, they are usually the cause.</p>' : ''}</div>`;
+}
+function sourceCard(a, m) {
+  const rows = []; FILES.filter(f => f.status !== 'ignored').forEach(f => f.parts.filter(p => !p.ignored && !p.replacedBy && (p.acct === a.id || p.acct === '*') && (!p.month || p.month === m || p.month === '*')).forEach(p => rows.push({ n: f.name, k: p.label || KIND_LABEL[p.kind] || p.kind, d: String(f.added || '').slice(0, 10) })));
+  return `<div class="card"><h2>Files used for this month (${rows.length})</h2>${rows.length ? `<div class="tw"><table><thead><tr><th>File</th><th>What it is</th><th>Added</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc(r.n)}</td><td>${esc(r.k)}</td><td>${esc(r.d)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="note">No file is placed on this account and month yet.</p>'}</div>`;
+}
+function openCard(a, m) {
+  let L = []; try { L = issuesAll().filter(i => i.acctId === a.id && i.month === m && isOpen(i)); } catch (e) { }
+  return `<div class="card"><h2>Open issues (${L.length})</h2>${L.length ? `<div class="tw"><table><thead><tr><th>Issue</th><th>Reference</th><th>Amount</th></tr></thead><tbody>${L.slice(0, 40).map(i => `<tr><td>${esc(i.kind)}${i.sev === 'bad' ? ' ' + pill('serious', 'bad') : ''}</td><td>${esc(i.ref || '')}</td><td class="num">${i.amount != null ? fmt(i.amount) : ''}</td></tr>`).join('')}</tbody></table></div>${L.length > 40 ? `<p class="note">…and ${L.length - 40} more.</p>` : ''}` : '<p class="note">None.</p>'}</div>`;
+}
+function shotTable(a, m, A) {
+  const s = K.shots[a.id + '|' + m]; if (!s || !A || !A.sums) return '';
+  let L = []; try { L = shotCompare(A, s); } catch (e) { return ''; }
+  if (!L.length) return '';
+  const f = r => r.isQty ? String(r.theirs / 100) : fmt(r.theirs), o = r => r.ours == null ? '—' : r.isQty ? String(r.ours / 100) : fmt(r.ours);
+  return `<div class="card"><h2>Seller Hub screenshot against the tool</h2><div class="tw"><table><thead><tr><th>Line</th><th>Screenshot</th><th>Tool</th><th>Difference</th></tr></thead><tbody>${L.map(r => `<tr><td>${esc(r.k)}</td><td class="num">${f(r)}</td><td class="num">${o(r)}</td><td class="num">${r.d == null ? '—' : r.isQty ? String(r.d / 100) : fmt(r.d)} ${r.bad ? pill('check', 'bad') : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+const _tsum12 = T.summary;
+T.summary = (a, m, A) => _tsum12(a, m, A) + bridgeCard(a, m, A) + shotTable(a, m, A) + sourceCard(a, m) + openCard(a, m);
+// a plain browser print (Ctrl+P, phone "Share → Print") gets the same heading as the Print button
+window.addEventListener('beforeprint', () => { const v = $('#view'); if (!v || v.querySelector('.printhead')) return; const h = document.createElement('div'); h.className = 'printhead pa12'; h.innerHTML = `<span class="lg">${LOGO_SVG}</span><div><b>Audit Desk</b>${S.view === 'audit' && acctById(S.acct) ? ' · ' + esc(acctById(S.acct).name) + ' · ' + MLL(S.month) : ''}<div class="note">${esc(stamp())}</div></div>`; v.prepend(h); });
+window.addEventListener('afterprint', () => { $$('.pa12').forEach(n => n.remove()); });
 </script>
 </body></html>
